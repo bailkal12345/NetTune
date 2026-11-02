@@ -1,0 +1,22 @@
+# build output
+build/
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+.vs/
+
+# compiled artifacts
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.obj
+*.iobj
+*.ipdb
+*.tlog
+
+# local
+*.log

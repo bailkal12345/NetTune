@@ -1,0 +1,29 @@
+{
+  "enabled": true,
+  "mode": "adaptive",
+  "applyIntervalSeconds": 10.0,
+  "statusIntervalSeconds": 30.0,
+
+  "NetServerMaxTickRate": 20,
+  "MaxClientRate": 60000,
+  "MaxInternetClientRate": 60000,
+
+  "CurrentNetSpeed": 60000,
+  "ConfiguredInternetSpeed": 60000,
+  "ConfiguredLanSpeed": 60000,
+
+  "AdaptiveMin": 14000,
+  "AdaptiveMax": 60000,
+  "AdaptiveStepUp": 10000,
+  "AdaptiveStepDown": 15000,
+  "AdaptiveLostPackets": 2,
+  "AdaptiveLagThreshold": 0.0,
+  "AdaptiveEvaluateSeconds": 10.0,
+
+  "DormancyLimitMultiplier": 0.0,
+  "DisableDormancyThrottling": false,
+
+  "StructureReplicationIntervalMultiplier": 0.0,
+  "StructureNetUpdateFrequency": 0.0,
+  "StructureApplyIntervalSeconds": 60.0
+}
