@@ -67,8 +67,10 @@ The status line is emitted every `StatusIntervalSeconds` and on `NetTune.Status`
 is always logged; per-connection detail is only in the periodic line when `Debug` is `true`.
 
 Per connection: `netspeed`, `queued`, `outBps`, `peakOutBps` (peak since the previous status line),
-`dorm` / `peakDorm`, `lost=in/out`, `lag` (`AvgLag`, seconds; `9999` is an uninitialized sentinel of
-a just-joined connection). Peaks are sampled every tick, so a base-load spike is not missed.
+`dorm` / `peakDorm`, `cap` (the nominal ceiling `tickrate / ((f*195+30) * multiplier)`; a `peakDorm`
+landing on it means the budget is binding), `lost=in/out`, `lag` (`AvgLag`, seconds; printed as `-`
+while it still holds the uninitialized sentinel of a just-joined connection). Peaks are sampled
+every tick, so a base-load spike is not missed.
 
 `peakDorm > 0` means the new-actor throttle is the binding limit: after a tick `DormancyRate` is
 either `0` (the actor list was exhausted before the budget was reached) or at most
@@ -80,7 +82,8 @@ momentarily faster frame pushes the observed peak slightly above it (e.g. `0.018
 always `(f*195 + 30) * multiplier` actors per second.
 
 `totalPeakMbps` is the peak summed over all connections - this is what has to fit the link;
-`budgetUtilPct` compares it against `BandwidthBudgetMbps`.
+`budgetUtilPct` compares it against `BandwidthBudgetMbps` and is only printed when the budget is
+configured.
 
 ## RCON
 

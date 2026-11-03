@@ -201,11 +201,18 @@ namespace
 			ConnectionPeaks& peaks = g_peaks[connection];
 
 			if (!periodic || g_config.debug) {
-				LOG_INFO("status({}): conn[{}] ip='{}' netspeed={} queued={} outBps={} peakOutBps={} dorm={} peakDorm={} lost={}/{} lag={}",
+				std::string cap = "-";
+				if (tick_rate > 0 && dormancy_multiplier > 0.0f && sample.net_speed > 0) {
+					const float f = std::clamp((sample.net_speed - 14000.0f) / 46000.0f, 0.0f, 1.0f);
+					cap = fmt::format("{:.4g}", tick_rate / ((f * 195.0f + 30.0f) * dormancy_multiplier));
+				}
+
+				LOG_INFO("status({}): conn[{}] ip='{}' netspeed={} queued={} outBps={} peakOutBps={} dorm={:.4g} peakDorm={:.4g} cap={} lost={}/{} lag={}",
 					source, connection_index, connection->ClientGivenIPField().ToString(),
 					sample.net_speed, sample.queued_bytes, sample.out_bps, peaks.out_bps,
-					sample.dormancy_rate, peaks.dormancy_rate,
-					sample.packets_lost_in, sample.packets_lost_out, sample.avg_lag_seconds);
+					sample.dormancy_rate, peaks.dormancy_rate, cap,
+					sample.packets_lost_in, sample.packets_lost_out,
+					sample.avg_lag_seconds > 60.0f ? "-" : fmt::format("{:.3g}", sample.avg_lag_seconds));
 			}
 
 			total_out_bps += sample.out_bps;
@@ -216,15 +223,19 @@ namespace
 		}
 
 		const double total_peak_mbps = static_cast<double>(total_peak_out_bps) * 8.0 / 1e6;
-		float budget_utilization = -1.0f;
-		if (g_config.bandwidth_budget_mbps > 0.0f) {
-			budget_utilization = static_cast<float>(
-				total_peak_mbps / static_cast<double>(g_config.bandwidth_budget_mbps) * 100.0);
-		}
 
-		LOG_INFO("status({}): tickrate={} observedFps={} dormancyMult={} connections={} totalOutBps={} totalPeakMbps={} budgetUtilPct={}",
-			source, tick_rate, g_observed_fps, dormancy_multiplier,
-			connection_index, total_out_bps, total_peak_mbps, budget_utilization);
+		if (g_config.bandwidth_budget_mbps > 0.0f) {
+			const float budget_utilization = static_cast<float>(
+				total_peak_mbps / static_cast<double>(g_config.bandwidth_budget_mbps) * 100.0);
+			LOG_INFO("status({}): tickrate={} observedFps={:.1f} dormancyMult={} connections={} totalOutBps={} totalPeakMbps={:.2f} budgetUtilPct={:.1f}",
+				source, tick_rate, g_observed_fps, dormancy_multiplier,
+				connection_index, total_out_bps, total_peak_mbps, budget_utilization);
+		}
+		else {
+			LOG_INFO("status({}): tickrate={} observedFps={:.1f} dormancyMult={} connections={} totalOutBps={} totalPeakMbps={:.2f}",
+				source, tick_rate, g_observed_fps, dormancy_multiplier,
+				connection_index, total_out_bps, total_peak_mbps);
+		}
 	}
 
 	void Tick(float delta_seconds)
