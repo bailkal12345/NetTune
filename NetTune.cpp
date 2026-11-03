@@ -261,7 +261,7 @@ namespace
 		}
 	}
 
-	void LogStatus(const char* reason)
+	void LogStatus(const char* reason, const bool periodic)
 	{
 		UWorld* world = ArkApi::GetApiUtils().GetWorld();
 		UNetDriver* driver = world ? world->NetDriverField() : nullptr;
@@ -307,10 +307,14 @@ namespace
 
 			ConnPeaks& peaks = g_peaks[connection];
 
-			LOG_INFO("status({}): conn[{}] ip='{}' netspeed={} queued={} outBps={} peakOutBps={} dorm={} peakDorm={} lost={}/{} lag={}",
-				reason, index, connection->ClientGivenIPField().ToString(),
-				net_speed, queued_bytes, out_bytes, peaks.peak_out_bps,
-				dormancy, peaks.peak_dorm, in_lost, out_lost, avg_lag);
+			// Per-connection detail is verbose: periodic lines only when Debug is on,
+			// NetTune.Status always shows it. The summary below is always logged.
+			if (!periodic || g_config.debug) {
+				LOG_INFO("status({}): conn[{}] ip='{}' netspeed={} queued={} outBps={} peakOutBps={} dorm={} peakDorm={} lost={}/{} lag={}",
+					reason, index, connection->ClientGivenIPField().ToString(),
+					net_speed, queued_bytes, out_bytes, peaks.peak_out_bps,
+					dormancy, peaks.peak_dorm, in_lost, out_lost, avg_lag);
+			}
 
 			total_out_bps += out_bytes;
 			total_peak_out_bps += peaks.peak_out_bps;
@@ -359,7 +363,7 @@ namespace
 		if (g_config.status_interval_seconds > 0.0f &&
 			g_since_status >= g_config.status_interval_seconds) {
 			g_since_status = 0.0f;
-			LogStatus("periodic");
+			LogStatus("periodic", true);
 		}
 	}
 
@@ -401,7 +405,7 @@ namespace
 
 	void CmdStatus(RCONClientConnection*, RCONPacket*, UWorld*)
 	{
-		LogStatus("rcon");
+		LogStatus("rcon", false);
 	}
 }
 

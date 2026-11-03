@@ -68,7 +68,7 @@ stay out of the plugin.
 | `ReconcileIntervalSeconds` | `15.0` | how often the values are re-checked for drift |
 | `StatusIntervalSeconds` | `60.0` | periodic status line (info level); `0` = off |
 | `BandwidthBudgetMbps` | `0.0` | per-server egress budget used for `budgetUtilPct`; `0.0` = do not show it |
-| `Debug` | `false` | raise the plugin log level to debug |
+| `Debug` | `false` | include the per-connection detail in the periodic status line |
 
 Re-applying is needed because the engine can still reset the values: `UWorld::Listen` resets
 `MaxClientRate` on a map load, and a client can resend `NMT_Netspeed`. Nothing is written while the
@@ -76,17 +76,19 @@ values already match.
 
 ## Telemetry
 
-The status line is emitted at info level every `StatusIntervalSeconds` and on `NetTune.Status`. It
-reports, per connection: `netspeed`, `queued` (`QueuedBytes`), `outBps` (current), `peakOutBps`
-(peak since the previous status line), `dorm` / `peakDorm` (the new-actor throttle - if `peakDorm`
-sits near `1.0` the throttle is binding), and `lost=in/out` plus `lag` (`AvgLag`, seconds). Peaks are
-sampled every tick, so a short spike (a base loading) is not missed, and are reset by each status
-line.
+The status line is emitted every `StatusIntervalSeconds` and on `NetTune.Status`. The summary line
+(`tickrate`, `observedFps`, `dormancyMult`, `connections`, `totalOutBps`, `totalPeakMbps`,
+`budgetUtilPct`) is always logged; the per-connection detail is only included in the *periodic* line
+when `Debug` is `true` (`NetTune.Status` always shows it). Set `StatusIntervalSeconds: 0` to turn the
+periodic line off entirely.
 
-The summary line adds `totalOutBps`, `totalPeakMbps` (the peak summed over all connections - this is
-what has to fit the link) and `budgetUtilPct` (against `BandwidthBudgetMbps`).
+Per connection: `netspeed`, `queued` (`QueuedBytes`), `outBps` (current), `peakOutBps` (peak since
+the previous status line), `dorm` / `peakDorm` (the new-actor throttle - if `peakDorm` sits near
+`1.0` the throttle is binding), and `lost=in/out` plus `lag` (`AvgLag`, seconds). Peaks are sampled
+every tick, so a short spike (a base loading) is not missed, and are reset by each status line.
 
-For a busy host prefer a larger `StatusIntervalSeconds` (e.g. `300`) to keep the log quiet.
+`totalPeakMbps` is the peak summed over all connections - this is what has to fit the link;
+`budgetUtilPct` compares it against `BandwidthBudgetMbps`.
 
 ## RCON
 
@@ -116,6 +118,17 @@ would push the same case to ~`213 Mbit/s` and break the link, so it stays `1.0`.
 `NetServerMaxTickRate = 15` is the CPU knob (13 maps on one machine) and does **not** affect base
 loading; use `20` if the CPU has headroom. Conservative fallback if the link is tight:
 `CurrentNetSpeed = 40000` (about 1.6x slower loading, about half the peak traffic).
+
+### Test vs production
+
+| | `Debug` | `StatusIntervalSeconds` | Purpose |
+| --- | --- | --- | --- |
+| Test | `true` | `15` | full per-connection telemetry, easy to catch a base load |
+| Production | `false` | `0` | quiet; use `NetTune.Status` on demand |
+
+The tuned values (`NetServerMaxTickRate`, `CurrentNetSpeed`, `DormancyLimitMultiplier`) are the same
+in both; only the telemetry verbosity differs. To compare levers, change one value at a time
+(`NetTune.Reload`) and watch `peakOutBps` / `peakDorm` / `budgetUtilPct`.
 
 ## Build
 
