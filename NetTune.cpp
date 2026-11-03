@@ -8,7 +8,6 @@
 #include <json.hpp>
 
 #include <algorithm>
-#include <cstddef>
 #include <string>
 #include <unordered_map>
 
@@ -47,104 +46,35 @@ namespace
 		unsigned long long last_seen_tick = 0;
 	};
 
-	// ArkApi resolves a field name to an offset with a string lookup on every call. The
-	// offset is fixed for the binary, so it is resolved once from the first live object
-	// and reused; the tick path then reads fields with plain pointer arithmetic.
-	template <typename T>
-	class CachedField
-	{
-	public:
-		explicit CachedField(const char* name)
-			: name_(name) {}
-
-		T* Get(void* object)
-		{
-			if (object && state_ == State::Unresolved) {
-				Resolve(object);
-			}
-			if (!object || state_ != State::Resolved) {
-				return nullptr;
-			}
-			return reinterpret_cast<T*>(static_cast<char*>(object) + offset_);
-		}
-
-	private:
-		enum class State { Unresolved, Resolved, Failed };
-
-		void Resolve(void* object)
-		{
-			const char* base = static_cast<const char*>(object);
-			const char* field = GetNativePointerField<char*>(object, name_);
-			if (field && field != base) {
-				offset_ = field - base;
-				state_ = State::Resolved;
-			}
-			else {
-				state_ = State::Failed;
-			}
-		}
-
-		const char* name_;
-		ptrdiff_t offset_ = 0;
-		State state_ = State::Unresolved;
-	};
-
-	template <typename T>
-	class CachedGlobal
-	{
-	public:
-		explicit CachedGlobal(const char* name)
-			: name_(name) {}
-
-		T* Get()
-		{
-			if (!resolved_) {
-				value_ = GetNativeDataPointerField<T*>(name_);
-				resolved_ = true;
-			}
-			return value_;
-		}
-
-	private:
-		const char* name_;
-		bool resolved_ = false;
-		T* value_ = nullptr;
-	};
-
-	namespace fields
-	{
-		CachedField<TArray<UNetConnection*>> client_connections("UNetDriver.ClientConnections");
-		CachedField<int> server_max_tick_rate("UNetDriver.NetServerMaxTickRate");
-		CachedField<int> current_net_speed("UPlayer.CurrentNetSpeed");
-		CachedField<int> queued_bytes("UNetConnection.QueuedBytes");
-		CachedField<unsigned int> out_bytes("UNetConnection.OutBytes");
-		CachedField<unsigned int> in_packets_lost("UNetConnection.InPacketsLost");
-		CachedField<unsigned int> out_packets_lost("UNetConnection.OutPacketsLost");
-		CachedField<float> dormancy_rate("UNetConnection.DormancyRate");
-		CachedField<float> avg_lag("UNetConnection.AvgLag");
-		CachedGlobal<float> dormancy_limit_multiplier("Global.GDormancyLimitMultiplier");
-	}
-
 	PluginConfig g_config;
-	unsigned long long g_tick_count = 0;
 	float g_observed_fps = 0.0f;
 	float g_fps_window_seconds = 0.0f;
 	unsigned long long g_fps_window_ticks = 0;
 	float g_seconds_since_reconcile = 0.0f;
 	float g_seconds_since_status = 0.0f;
+	unsigned long long g_tick_count = 0;
 	std::unordered_map<UNetConnection*, ConnectionPeaks> g_peaks;
 
-	UNetDriver* NetDriver()
+	template <typename T>
+	T* Field(void* object, const char* name)
 	{
-		UWorld* world = ArkApi::GetApiUtils().GetWorld();
-		return world ? world->NetDriverField() : nullptr;
+		if (!object) {
+			return nullptr;
+		}
+
+		T* field = GetNativePointerField<T*>(object, name);
+		if (!field || reinterpret_cast<char*>(field) == reinterpret_cast<char*>(object)) {
+			return nullptr;
+		}
+
+		return field;
 	}
 
 	template <typename T>
-	T Read(CachedField<T>& field, void* object)
+	T ReadField(void* object, const char* name)
 	{
-		T* pointer = field.Get(object);
-		return pointer ? *pointer : T{};
+		T* field = Field<T>(object, name);
+		return field ? *field : T{};
 	}
 
 	template <typename T>
@@ -158,16 +88,22 @@ namespace
 		return 1;
 	}
 
+	UNetDriver* NetDriver()
+	{
+		UWorld* world = ArkApi::GetApiUtils().GetWorld();
+		return world ? world->NetDriverField() : nullptr;
+	}
+
 	ConnectionSample ReadConnection(UNetConnection* connection)
 	{
 		ConnectionSample sample;
-		sample.net_speed = Read(fields::current_net_speed, connection);
-		sample.queued_bytes = Read(fields::queued_bytes, connection);
-		sample.out_bps = Read(fields::out_bytes, connection);
-		sample.packets_lost_in = Read(fields::in_packets_lost, connection);
-		sample.packets_lost_out = Read(fields::out_packets_lost, connection);
-		sample.dormancy_rate = Read(fields::dormancy_rate, connection);
-		sample.avg_lag_seconds = Read(fields::avg_lag, connection);
+		sample.net_speed = ReadField<int>(connection, "UPlayer.CurrentNetSpeed");
+		sample.queued_bytes = ReadField<int>(connection, "UNetConnection.QueuedBytes");
+		sample.out_bps = ReadField<unsigned int>(connection, "UNetConnection.OutBytes");
+		sample.packets_lost_in = ReadField<unsigned int>(connection, "UNetConnection.InPacketsLost");
+		sample.packets_lost_out = ReadField<unsigned int>(connection, "UNetConnection.OutPacketsLost");
+		sample.dormancy_rate = ReadField<float>(connection, "UNetConnection.DormancyRate");
+		sample.avg_lag_seconds = ReadField<float>(connection, "UNetConnection.AvgLag");
 		return sample;
 	}
 
@@ -183,24 +119,27 @@ namespace
 		int globals_changed = 0;
 
 		if (g_config.server_max_tick_rate > 0) {
-			driver_changed += WriteIfDifferent(fields::server_max_tick_rate.Get(driver),
+			driver_changed += WriteIfDifferent(Field<int>(driver, "UNetDriver.NetServerMaxTickRate"),
 				g_config.server_max_tick_rate);
 		}
 
 		if (g_config.current_net_speed > 0) {
-			if (TArray<UNetConnection*>* connections = fields::client_connections.Get(driver)) {
+			TArray<UNetConnection*>* connections =
+				Field<TArray<UNetConnection*>>(driver, "UNetDriver.ClientConnections");
+			if (connections) {
 				for (int i = 0; i < connections->Num(); ++i) {
 					UNetConnection* connection = (*connections)[i];
 					if (connection) {
-						connections_changed += WriteIfDifferent(fields::current_net_speed.Get(connection),
-							g_config.current_net_speed);
+						connections_changed += WriteIfDifferent(
+							Field<int>(connection, "UPlayer.CurrentNetSpeed"), g_config.current_net_speed);
 					}
 				}
 			}
 		}
 
 		if (g_config.dormancy_limit_multiplier > 0.0f) {
-			globals_changed += WriteIfDifferent(fields::dormancy_limit_multiplier.Get(),
+			globals_changed += WriteIfDifferent(
+				GetNativeDataPointerField<float*>("Global.GDormancyLimitMultiplier"),
 				g_config.dormancy_limit_multiplier);
 		}
 
@@ -217,7 +156,8 @@ namespace
 			return;
 		}
 
-		TArray<UNetConnection*>* connections = fields::client_connections.Get(driver);
+		TArray<UNetConnection*>* connections =
+			Field<TArray<UNetConnection*>>(driver, "UNetDriver.ClientConnections");
 		if (!connections) {
 			return;
 		}
@@ -258,15 +198,16 @@ namespace
 			return;
 		}
 
-		TArray<UNetConnection*>* connections = fields::client_connections.Get(driver);
+		TArray<UNetConnection*>* connections =
+			Field<TArray<UNetConnection*>>(driver, "UNetDriver.ClientConnections");
 		if (!connections) {
 			LOG_INFO("status({}): no connection list", source);
 			return;
 		}
 
-		const int tick_rate = Read(fields::server_max_tick_rate, driver);
+		const int tick_rate = ReadField<int>(driver, "UNetDriver.NetServerMaxTickRate");
 		float dormancy_multiplier = 0.0f;
-		if (float* value = fields::dormancy_limit_multiplier.Get()) {
+		if (float* value = GetNativeDataPointerField<float*>("Global.GDormancyLimitMultiplier")) {
 			dormancy_multiplier = *value;
 		}
 
