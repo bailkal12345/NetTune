@@ -10,7 +10,7 @@ Three values are reconciled (written only when they differ, so a steady state wr
 | Value | Where | Effect |
 | --- | --- | --- |
 | `UPlayer.CurrentNetSpeed` | each `UNetConnection` | budget for **new** actors, see below |
-| `UNetDriver.NetServerMaxTickRate` | net driver | server frame rate (`UGameEngine::GetMaxTickRate`, clamped to `[10, 120]`) |
+| `UNetDriver.NetServerMaxTickRate` | net driver | server frame rate (clamped to `[10, 120]` by the engine) |
 | `GDormancyLimitMultiplier` | global | divides the new-actor increment (linear lever) |
 
 `CurrentNetSpeed` is **not** a bytes/second cap. In `UNetDriver::ServerReplicateActors` every newly
@@ -18,23 +18,18 @@ relevant actor adds to the connection's dormancy budget:
 
 ```
 DormancyRate += (1.0 / (f*195 + 30)) / DeltaSeconds / GDormancyLimitMultiplier
-f = clamp((CurrentNetSpeed - 14000) / 46000, 0, 1)      // saturates at 60000
+f = clamp((CurrentNetSpeed - 14000) / 46000, 0, 1)
 ```
 
 `DormancyRate` decays by `1.0` per tick, so new actors per second is about
 `(f*195 + 30) * GDormancyLimitMultiplier`: ~30/s at `14000`, ~225/s at `60000`. `f` saturates at
-`60000`, so **values above 60000 do nothing**. The client sends this value itself
-(`NMT_Netspeed`, derived from its `ClientNetQuality`), so a "Low" client gets `14000` and loads
-bases roughly 7.5x slower — which is exactly what the plugin overrides.
+`60000`, so **values above 60000 do nothing**. The client sends this value itself (`NMT_Netspeed`),
+so a "Low" client gets `14000` and loads bases ~7.5x slower - which is what the plugin overrides.
 
-`NetServerMaxTickRate` does **not** change the new-actor rate: `tickrate` cancels out of the formula
-above (a higher tick rate means proportionally fewer actors per tick). It trades CPU for granularity.
+`NetServerMaxTickRate` does **not** change the new-actor rate (it cancels out of the formula); it
+trades CPU for granularity. `GDormancyLimitMultiplier` is the only lever beyond `60000`.
 
-`GDormancyLimitMultiplier` is the only lever beyond `60000`; it scales the rate linearly.
-
-### Measurements (live server, out-and-back base reloads)
-
-`peakDorm` is the increment observed during a reload:
+Measured live (out-and-back base reloads, predicted vs observed `peakDorm`):
 
 | tick rate | CurrentNetSpeed | multiplier | predicted | observed |
 | --- | --- | --- | --- | --- |
@@ -43,22 +38,14 @@ above (a higher tick rate means proportionally fewer actors per tick). It trades
 | 20 | 60000 | 3.0 | 0.030 | 0.025 |
 | 40 | 60000 | 1.0 | 0.178 | 0.180 |
 
-Peak egress also scaled with the budget: **44 KB/s** at `14000` vs **296 KB/s** at `60000`.
-
-### Deliberately not used
-
-Measured to have no effect, so they are not configurable: `UNetDriver.MaxClientRate` /
-`MaxInternetClientRate` (read only by `UWorld::Listen`, which forces `60000`),
-`AGameNetworkManager` bandwidth fields, and per-actor `NetCullDistanceSquared` / `NetUpdateFrequency`
-(they do not affect the initial load; changing a structure's cull distance does not even change the
-set of replicated actors).
-
-See `RESEARCH.md` for the levers that were **not** confirmed (or only read in code) and therefore
-stay out of the plugin.
+Levers that were measured to do nothing (`MaxClientRate`/`MaxInternetClientRate`,
+`AGameNetworkManager` fields, per-actor cull distance / update frequency) and everything only read
+in code are listed in `RESEARCH.md`.
 
 ## Configuration
 
-`Configs/config.json` (hot-reloadable, no restart):
+`Configs/config.json` (hot-reloadable via `NetTune.Reload`; if missing, the plugin logs a warning
+and runs on the defaults - it does not create the file):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -66,38 +53,25 @@ stay out of the plugin.
 | `CurrentNetSpeed` | `60000` | per-client new-actor budget (`14000..60000`); `0` = leave unchanged |
 | `DormancyLimitMultiplier` | `0.0` | `GDormancyLimitMultiplier`; `0.0` = leave unchanged (ARK default `1.0`) |
 | `ReconcileIntervalSeconds` | `15.0` | how often the values are re-checked for drift |
-| `StatusIntervalSeconds` | `60.0` | periodic status line (info level); `0` = off |
-| `BandwidthBudgetMbps` | `0.0` | per-server egress budget used for `budgetUtilPct`; `0.0` = do not show it |
-| `Debug` | `false` | include the per-connection detail in the periodic status line |
+| `StatusIntervalSeconds` | `60.0` | periodic status line; `0` = off |
+| `BandwidthBudgetMbps` | `0.0` | per-server egress budget used for `budgetUtilPct`; `0.0` = hide it |
+| `Debug` | `false` | per-connection detail in the periodic status line |
 
-Re-applying is needed because the engine can still reset the values: `UWorld::Listen` resets
-`MaxClientRate` on a map load, and a client can resend `NMT_Netspeed`. Nothing is written while the
-values already match.
+Re-applying is needed because the engine can reset the values (a client can resend `NMT_Netspeed`).
 
 ## Telemetry
 
 The status line is emitted every `StatusIntervalSeconds` and on `NetTune.Status`. The summary line
-(`tickrate`, `observedFps`, `dormancyMult`, `connections`, `totalOutBps`, `totalPeakMbps`,
-`budgetUtilPct`) is always logged; the per-connection detail is only included in the *periodic* line
-when `Debug` is `true` (`NetTune.Status` always shows it). Set `StatusIntervalSeconds: 0` to turn the
-periodic line off entirely.
+is always logged; per-connection detail is only in the periodic line when `Debug` is `true`.
 
-Per connection: `netspeed`, `queued` (`QueuedBytes`), `outBps` (current), `peakOutBps` (peak since
-the previous status line), `dorm` / `peakDorm`, and `lost=in/out` plus `lag` (`AvgLag`, seconds).
-Peaks are sampled every tick, so a short spike (a base loading) is not missed, and are reset by each
-status line.
+Per connection: `netspeed`, `queued`, `outBps`, `peakOutBps` (peak since the previous status line),
+`dorm` / `peakDorm`, `lost=in/out`, `lag` (`AvgLag`, seconds; `9999` is an uninitialized sentinel of
+a just-joined connection). Peaks are sampled every tick, so a base-load spike is not missed.
 
-`peakDorm` tells whether the new-actor throttle is the binding limit. `ServerReplicateActors` keeps
-adding newly relevant actors while the connection's `DormancyRate` is `<= 1.0`, and `DormancyRate`
-decays by `1.0` per tick, so after a tick it is either
-
-* `0` - the actor list was exhausted before the budget was reached (the throttle is not the limit), or
-* in `(0, inc]`, `inc = tickrate / ((f*195 + 30) * multiplier)` - the budget was reached.
-
-It can never approach `1.0`: the ceiling is `inc` (e.g. `~0.067` at tickrate 15 with
-`CurrentNetSpeed = 60000`). So **`peakDorm > 0` means the throttle is the binding limit**. In the
-collected production logs the cap was reached in ~13% of connection samples, always near the ceiling,
-so during base loads the throttle does bind and `GDormancyLimitMultiplier` is the lever.
+`peakDorm > 0` means the new-actor throttle is the binding limit: after a tick `DormancyRate` is
+either `0` (the actor list was exhausted before the budget was reached) or at most
+`inc = tickrate / ((f*195 + 30) * multiplier)` (the budget was reached). It can never approach
+`1.0`, so any non-zero peak is the ceiling.
 
 `totalPeakMbps` is the peak summed over all connections - this is what has to fit the link;
 `budgetUtilPct` compares it against `BandwidthBudgetMbps`.
@@ -111,59 +85,36 @@ so during base loads the throttle does bind and `GDormancyLimitMultiplier` is th
 
 ## Recommended config (13 maps, 200 Mbit/s, up to 100 players)
 
-`200 Mbit/s / 13 maps = 15.4 Mbit/s` per server, but the link is **shared**: what matters is the
-total. Measured on a live 13-map host: the sum of the per-map peaks was **5.3 Mbit/s** of 200 at
-`multiplier = 1` and **8.0 Mbit/s** at `multiplier = 3`, i.e. ~4%. The single-client peaks are
-`~320-590 KB/s` and happen only while a base loads, so 20-30 simultaneous loads on one map is a few
-tens of Mbit/s - well inside the link.
-
-`peakDorm` shows whether the new-actor throttle is the binding limit: it sits exactly at
-`inc = tickrate / ((f*195+30) * multiplier)` when the budget is reached. It was reached at
-`multiplier = 1` (0.067), `2` (0.044) **and** `3` (0.0296), so the multiplier is the lever and it has
-been safe to raise it.
-
-Loading time is roughly `structures / (225 * multiplier)` seconds per client, so the returns
-diminish: a 2000-structure base is ~8.9 s at `1`, ~3.0 s at `3`, ~2.2 s at `4`, ~1.5 s at `6`.
-Raise while `peakDorm` keeps landing on the ceiling; if the load still feels slow once it does not,
-the remaining limit is on the client (rendering / streaming), not on the server.
-
 ```json
 {
   "Debug": false,
   "NetServerMaxTickRate": 20,
   "CurrentNetSpeed": 60000,
-  "DormancyLimitMultiplier": 4.0,
+  "DormancyLimitMultiplier": 6.0,
   "ReconcileIntervalSeconds": 5.0,
   "StatusIntervalSeconds": 300.0,
   "BandwidthBudgetMbps": 15.4
 }
 ```
 
-* `DormancyLimitMultiplier = 4.0` -> 900 new actors/s per client (was 225 at `1.0`).
-* `ReconcileIntervalSeconds = 5.0` -> a freshly joined client is at the server default `14000` until
-  the next reconcile, so this shortens the slow start of every session (worst at a wipe).
-* `NetServerMaxTickRate = 20` is the CPU knob and does **not** affect base loading; the effective
-  rate on a loaded host is a bit lower (e.g. `16-20` for a target of `20`), and it dips during load
-  bursts. `15` is the CPU-conservative alternative.
-* Conservative fallback if the link is tight: `CurrentNetSpeed = 40000`.
+* `DormancyLimitMultiplier = 6.0` -> ~1350 new actors/s per client; a 2000-structure base loads in
+  ~1.5 s. The ceiling was reached at multipliers 1, 2, 3 and 4; at 6 only the most populated map
+  still hit it, so 12 of 13 maps are no longer throttled. Stop raising when `peakDorm` stays `0`
+  or well below the ceiling - the remaining limit is then the client (rendering / streaming).
+* `ReconcileIntervalSeconds = 5.0` -> a freshly joined client sits at the server default `14000`
+  until the next reconcile; this shortens the slow start of every session (worst at a wipe).
+* `NetServerMaxTickRate = 20` held `observedFps ~20` with 26 players on the host; `15` is the
+  CPU-conservative alternative. It does not affect base loading.
+* Bandwidth: the summed per-map peak was 5.3 / 8.0 / 4.4 Mbit/s of 200 at multipliers 1 / 3 / 6 -
+  the link is not the limit. `CurrentNetSpeed = 40000` is the fallback if it ever is.
 
-### Test vs production
-
-| | `Debug` | `StatusIntervalSeconds` | Purpose |
-| --- | --- | --- | --- |
-| Test | `true` | `15` | full per-connection telemetry, easy to catch a base load |
-| Production | `false` | `300` | summary only; use `NetTune.Status` for the detail |
-
-The tuned values (`NetServerMaxTickRate`, `CurrentNetSpeed`, `DormancyLimitMultiplier`) are the same
-in both; only the telemetry verbosity differs. To compare levers, change one value at a time
-(`NetTune.Reload`) and watch `peakOutBps` / `peakDorm` / `budgetUtilPct`.
+For testing use `Debug: true` and `StatusIntervalSeconds: 15`; the tuned values are the same.
 
 ## Build
 
-Open `NetTune.vcxproj` (Visual Studio 2022, x64) and build `Release`.
-It links against `ArkApi.lib` from `..\..\ARK-Server-API` and includes the shared headers from
-`..\Includes`. The output DLL goes to `build\Release\NetTune.dll`.
+Open `NetTune.vcxproj` (Visual Studio 2022, x64) and build `Release`. It expects the ArkApi headers
+and `ArkApi.lib` at `..\..\ARK-Server-API` and the shared headers at `..\Includes` (override with
+`/p:ArkApiRoot=...` and `/p:IncludesRoot=...`). Output: `build\Release\NetTune.dll`.
 
-Deploy to `ShooterGame\Binaries\Win64\ArkApi\Plugins\NetTune\` together with the `config.json` and
-`PluginInfo.json` from `Configs\`. If `config.json` is missing the plugin logs a warning and runs on
-the defaults above (it does not create the file).
+Deploy to `ShooterGame\Binaries\Win64\ArkApi\Plugins\NetTune\` together with `config.json` and
+`PluginInfo.json` from `Configs\`.

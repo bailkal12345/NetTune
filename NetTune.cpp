@@ -1,42 +1,5 @@
 // NetTune - ArkApi (ARK: Survival Evolved) server plugin.
-//
-// Speeds up delivering the world to a client (large bases first) by tuning the two
-// server-side values that were measured to matter on v361.
-//
-// Findings (from the v361 binary and from live out-and-back base reloads):
-//
-// * UPlayer::CurrentNetSpeed is the budget for NEW actors, not a bytes/second cap.
-//   In UNetDriver::ServerReplicateActors every newly relevant actor adds
-//     DormancyRate += (1.0 / (f*195 + 30)) / DeltaSeconds / GDormancyLimitMultiplier,
-//   where f = clamp((CurrentNetSpeed - 14000) / 46000, 0, 1), and DormancyRate decays
-//   by 1.0 per tick. New actors per second is therefore about
-//     (f*195 + 30) * GDormancyLimitMultiplier
-//   i.e. ~30/s at 14000 and ~225/s at 60000. Above 60000 nothing changes: f saturates.
-//   The value is what the client asks for (NMT_Netspeed, derived from its ClientNetQuality),
-//   so a "Low" client gets 14000 and loads bases ~7.5x slower.
-//
-// * UNetDriver::NetServerMaxTickRate is the server frame rate: UGameEngine::GetMaxTickRate
-//   reads it (clamped to [10, 120]); r.MaxFPS overrides it. It does not change the new-actor
-//   rate (it cancels out of the formula above) - it trades CPU for granularity.
-//
-// * GDormancyLimitMultiplier (global, default 1.0) divides the increment above, so it scales
-//   the new-actor rate linearly and is the only lever beyond 60000.
-//
-// Observed on a live server (peakDorm is the increment seen during a base reload):
-//   tick20 netspeed14000 mult1 -> 0.676   (predicted 0.667)
-//   tick20 netspeed60000 mult1 -> 0.076   (predicted 0.089)
-//   tick20 netspeed60000 mult3 -> 0.025   (predicted 0.030)
-//   tick40 netspeed60000 mult1 -> 0.180   (predicted 0.178)
-//
-// Deliberately not used (measured to have no effect): UNetDriver::MaxClientRate /
-// MaxInternetClientRate (read only by UWorld::Listen, which forces 60000),
-// AGameNetworkManager bandwidth fields, per-actor NetCullDistanceSquared / NetUpdateFrequency.
-//
-// Values are written only when they differ, so in a steady state the plugin writes nothing.
-// They are re-checked periodically because the engine can still reset them (UWorld::Listen
-// resets MaxClientRate on a map load, and a client can resend NMT_Netspeed).
-//
-// Config: Configs/config.json (hot-reloadable via RCON NetTune.Reload).
+// The tuned values, the mechanism behind them and the measurements are in README.md.
 
 #include <API/ARK/Ark.h>
 #include <Logger.h>
@@ -44,6 +7,8 @@
 #include <Config.h>
 #include <json.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <string>
 #include <unordered_map>
 
@@ -56,71 +21,134 @@ namespace
 	struct PluginConfig
 	{
 		bool debug = false;
-		int net_server_max_tick_rate = 20;       // 0 = leave unchanged
-		int current_net_speed = 60000;           // 0 = leave unchanged
-		float dormancy_limit_multiplier = 0.0f;  // 0 = leave unchanged
+		int server_max_tick_rate = 20;
+		int current_net_speed = 60000;
+		float dormancy_limit_multiplier = 0.0f;
 		float reconcile_interval_seconds = 15.0f;
-		float status_interval_seconds = 60.0f;   // periodic status line (info level); 0 = off
-		float bandwidth_budget_mbps = 0.0f;      // per-server egress budget for the utilisation %; 0 = off
+		float status_interval_seconds = 60.0f;
+		float bandwidth_budget_mbps = 0.0f;
 	};
+
+	struct ConnectionSample
+	{
+		int net_speed = 0;
+		int queued_bytes = 0;
+		unsigned int out_bps = 0;
+		unsigned int packets_lost_in = 0;
+		unsigned int packets_lost_out = 0;
+		float dormancy_rate = 0.0f;
+		float avg_lag_seconds = 0.0f;
+	};
+
+	struct ConnectionPeaks
+	{
+		unsigned int out_bps = 0;
+		float dormancy_rate = 0.0f;
+		unsigned long long last_seen_tick = 0;
+	};
+
+	// ArkApi resolves a field name to an offset with a string lookup on every call. The
+	// offset is fixed for the binary, so it is resolved once from the first live object
+	// and reused; the tick path then reads fields with plain pointer arithmetic.
+	template <typename T>
+	class CachedField
+	{
+	public:
+		explicit CachedField(const char* name)
+			: name_(name) {}
+
+		T* Get(void* object)
+		{
+			if (object && state_ == State::Unresolved) {
+				Resolve(object);
+			}
+			if (!object || state_ != State::Resolved) {
+				return nullptr;
+			}
+			return reinterpret_cast<T*>(static_cast<char*>(object) + offset_);
+		}
+
+	private:
+		enum class State { Unresolved, Resolved, Failed };
+
+		void Resolve(void* object)
+		{
+			const char* base = static_cast<const char*>(object);
+			const char* field = GetNativePointerField<char*>(object, name_);
+			if (field && field != base) {
+				offset_ = field - base;
+				state_ = State::Resolved;
+			}
+			else {
+				state_ = State::Failed;
+			}
+		}
+
+		const char* name_;
+		ptrdiff_t offset_ = 0;
+		State state_ = State::Unresolved;
+	};
+
+	template <typename T>
+	class CachedGlobal
+	{
+	public:
+		explicit CachedGlobal(const char* name)
+			: name_(name) {}
+
+		T* Get()
+		{
+			if (!resolved_) {
+				value_ = GetNativeDataPointerField<T*>(name_);
+				resolved_ = true;
+			}
+			return value_;
+		}
+
+	private:
+		const char* name_;
+		bool resolved_ = false;
+		T* value_ = nullptr;
+	};
+
+	namespace fields
+	{
+		CachedField<TArray<UNetConnection*>> client_connections("UNetDriver.ClientConnections");
+		CachedField<int> server_max_tick_rate("UNetDriver.NetServerMaxTickRate");
+		CachedField<int> current_net_speed("UPlayer.CurrentNetSpeed");
+		CachedField<int> queued_bytes("UNetConnection.QueuedBytes");
+		CachedField<unsigned int> out_bytes("UNetConnection.OutBytes");
+		CachedField<unsigned int> in_packets_lost("UNetConnection.InPacketsLost");
+		CachedField<unsigned int> out_packets_lost("UNetConnection.OutPacketsLost");
+		CachedField<float> dormancy_rate("UNetConnection.DormancyRate");
+		CachedField<float> avg_lag("UNetConnection.AvgLag");
+		CachedGlobal<float> dormancy_limit_multiplier("Global.GDormancyLimitMultiplier");
+	}
 
 	PluginConfig g_config;
-
-	unsigned long long g_ticks = 0;
-	float g_tick_window_seconds = 0.0f;
-	unsigned long long g_tick_window_count = 0;
+	unsigned long long g_tick_count = 0;
 	float g_observed_fps = 0.0f;
-	float g_since_reconcile = 0.0f;
-	float g_since_status = 0.0f;
+	float g_fps_window_seconds = 0.0f;
+	unsigned long long g_fps_window_ticks = 0;
+	float g_seconds_since_reconcile = 0.0f;
+	float g_seconds_since_status = 0.0f;
+	std::unordered_map<UNetConnection*, ConnectionPeaks> g_peaks;
 
-	// Per-connection peaks since the previous status line. UNetConnection::OutBytes and
-	// DormancyRate are reset every StatPeriod (1 s), so OutBytes is already bytes/second.
-	//
-	// peakDorm tells whether the new-actor throttle is the binding limit:
-	// ServerReplicateActors keeps adding newly relevant actors while DormancyRate <= 1.0 and
-	// DormancyRate decays by 1.0 per tick, so after a tick it is either 0 (the actor list was
-	// exhausted before the budget was reached) or in (0, inc] with
-	// inc = tickrate / ((f*195 + 30) * multiplier) (the budget was reached). It can never
-	// approach 1.0 - the ceiling is inc, e.g. ~0.067 at tickrate 15 and CurrentNetSpeed 60000.
-	// So peakDorm > 0 means the throttle IS the binding limit.
-	struct ConnPeaks
+	UNetDriver* NetDriver()
 	{
-		unsigned int peak_out_bps = 0;
-		float peak_dorm = 0.0f;
-		unsigned long long last_seen = 0;
-	};
-
-	std::unordered_map<UNetConnection*, ConnPeaks> g_peaks;
-	unsigned long long g_peaks_generation = 0;
-
-	// --- field access -------------------------------------------------------------------
-	// ArkApi::GetAddress(base, name) returns 0 for a missing symbol, and returns base
-	// itself for an offset of 0 - both are treated as "not found".
-	template <typename T>
-	T* SafeField(void* object, const char* name)
-	{
-		if (!object) {
-			return nullptr;
-		}
-
-		T* field = GetNativePointerField<T*>(object, name);
-		if (!field || reinterpret_cast<char*>(field) == reinterpret_cast<char*>(object)) {
-			return nullptr;
-		}
-
-		return field;
+		UWorld* world = ArkApi::GetApiUtils().GetWorld();
+		return world ? world->NetDriverField() : nullptr;
 	}
 
-	// Global data symbols live in the ArkApi offsets map under "Global.<name>".
 	template <typename T>
-	T* SafeGlobal(const char* name)
+	T Read(CachedField<T>& field, void* object)
 	{
-		return GetNativeDataPointerField<T*>(name);
+		T* pointer = field.Get(object);
+		return pointer ? *pointer : T{};
 	}
 
-	// Writes only when the value differs; returns 1 if it wrote.
 	template <typename T>
-	int SetIfDiff(T* field, const T& value)
+	int WriteIfDifferent(T* field, const T& value)
 	{
 		if (!field || *field == value) {
 			return 0;
@@ -130,84 +158,51 @@ namespace
 		return 1;
 	}
 
-	template <typename T>
-	bool ReadField(void* object, const char* name, T& out)
+	ConnectionSample ReadConnection(UNetConnection* connection)
 	{
-		T* field = SafeField<T>(object, name);
-		if (!field) {
-			return false;
-		}
-
-		out = *field;
-		return true;
-	}
-
-	// ClientConnectionsField() returns the TArray by value (a heap copy), so take the field
-	// pointer instead - the tick path must not allocate.
-	TArray<UNetConnection*>* ConnectionList(UNetDriver* driver)
-	{
-		return SafeField<TArray<UNetConnection*>>(driver, "UNetDriver.ClientConnections");
-	}
-
-	// --- apply --------------------------------------------------------------------------
-
-	int ReconcileDriver(UNetDriver* driver)
-	{
-		int changed = 0;
-
-		if (g_config.net_server_max_tick_rate > 0) {
-			changed += SetIfDiff(SafeField<int>(driver, "UNetDriver.NetServerMaxTickRate"),
-				g_config.net_server_max_tick_rate);
-		}
-
-		return changed;
-	}
-
-	int ReconcileGlobals()
-	{
-		int changed = 0;
-
-		if (g_config.dormancy_limit_multiplier > 0.0f) {
-			changed += SetIfDiff(SafeGlobal<float>("Global.GDormancyLimitMultiplier"),
-				g_config.dormancy_limit_multiplier);
-		}
-
-		return changed;
-	}
-
-	int ReconcileConnections(UNetDriver* driver)
-	{
-		int changed = 0;
-
-		for (UNetConnection* connection : driver->ClientConnectionsField()) {
-			if (!connection) {
-				continue;
-			}
-
-			if (g_config.current_net_speed > 0) {
-				changed += SetIfDiff(SafeField<int>(connection, "UPlayer.CurrentNetSpeed"),
-					g_config.current_net_speed);
-			}
-		}
-
-		return changed;
+		ConnectionSample sample;
+		sample.net_speed = Read(fields::current_net_speed, connection);
+		sample.queued_bytes = Read(fields::queued_bytes, connection);
+		sample.out_bps = Read(fields::out_bytes, connection);
+		sample.packets_lost_in = Read(fields::in_packets_lost, connection);
+		sample.packets_lost_out = Read(fields::out_packets_lost, connection);
+		sample.dormancy_rate = Read(fields::dormancy_rate, connection);
+		sample.avg_lag_seconds = Read(fields::avg_lag, connection);
+		return sample;
 	}
 
 	void Reconcile()
 	{
-		UWorld* world = ArkApi::GetApiUtils().GetWorld();
-		if (!world) {
-			return;
-		}
-
-		UNetDriver* driver = world->NetDriverField();
+		UNetDriver* driver = NetDriver();
 		if (!driver) {
 			return;
 		}
 
-		const int driver_changed = ReconcileDriver(driver);
-		const int connections_changed = ReconcileConnections(driver);
-		const int globals_changed = ReconcileGlobals();
+		int driver_changed = 0;
+		int connections_changed = 0;
+		int globals_changed = 0;
+
+		if (g_config.server_max_tick_rate > 0) {
+			driver_changed += WriteIfDifferent(fields::server_max_tick_rate.Get(driver),
+				g_config.server_max_tick_rate);
+		}
+
+		if (g_config.current_net_speed > 0) {
+			if (TArray<UNetConnection*>* connections = fields::client_connections.Get(driver)) {
+				for (int i = 0; i < connections->Num(); ++i) {
+					UNetConnection* connection = (*connections)[i];
+					if (connection) {
+						connections_changed += WriteIfDifferent(fields::current_net_speed.Get(connection),
+							g_config.current_net_speed);
+					}
+				}
+			}
+		}
+
+		if (g_config.dormancy_limit_multiplier > 0.0f) {
+			globals_changed += WriteIfDifferent(fields::dormancy_limit_multiplier.Get(),
+				g_config.dormancy_limit_multiplier);
+		}
 
 		if (driver_changed + connections_changed + globals_changed > 0) {
 			LOG_INFO("applied driver={} connections={} globals={}",
@@ -215,24 +210,19 @@ namespace
 		}
 	}
 
-	// --- reporting ----------------------------------------------------------------------
-
-	// Sampled every tick so a short spike (a base loading) is not missed by the
-	// periodic status line. No allocations on this path.
-	void TrackPeaks()
+	void UpdatePeaks()
 	{
-		UWorld* world = ArkApi::GetApiUtils().GetWorld();
-		UNetDriver* driver = world ? world->NetDriverField() : nullptr;
+		UNetDriver* driver = NetDriver();
 		if (!driver) {
 			return;
 		}
 
-		TArray<UNetConnection*>* connections = ConnectionList(driver);
+		TArray<UNetConnection*>* connections = fields::client_connections.Get(driver);
 		if (!connections) {
 			return;
 		}
 
-		++g_peaks_generation;
+		++g_tick_count;
 
 		for (int i = 0; i < connections->Num(); ++i) {
 			UNetConnection* connection = (*connections)[i];
@@ -240,27 +230,18 @@ namespace
 				continue;
 			}
 
-			unsigned int out_bytes = 0;
-			float dormancy = 0.0f;
-			ReadField(connection, "UNetConnection.OutBytes", out_bytes);
-			ReadField(connection, "UNetConnection.DormancyRate", dormancy);
-
-			ConnPeaks& peaks = g_peaks[connection];
-			peaks.last_seen = g_peaks_generation;
-			if (out_bytes > peaks.peak_out_bps) {
-				peaks.peak_out_bps = out_bytes;
-			}
-			if (dormancy > peaks.peak_dorm) {
-				peaks.peak_dorm = dormancy;
-			}
+			const ConnectionSample sample = ReadConnection(connection);
+			ConnectionPeaks& peaks = g_peaks[connection];
+			peaks.last_seen_tick = g_tick_count;
+			peaks.out_bps = (std::max)(peaks.out_bps, sample.out_bps);
+			peaks.dormancy_rate = (std::max)(peaks.dormancy_rate, sample.dormancy_rate);
 		}
 	}
 
-	// Dropped entries for closed connections; run from the (rare) reconcile path.
-	void PrunePeaks()
+	void PruneStalePeaks()
 	{
 		for (auto it = g_peaks.begin(); it != g_peaks.end();) {
-			if (it->second.last_seen == g_peaks_generation) {
+			if (it->second.last_seen_tick == g_tick_count) {
 				++it;
 			}
 			else {
@@ -269,32 +250,29 @@ namespace
 		}
 	}
 
-	void LogStatus(const char* reason, const bool periodic)
+	void LogStatus(const char* source, const bool periodic)
 	{
-		UWorld* world = ArkApi::GetApiUtils().GetWorld();
-		UNetDriver* driver = world ? world->NetDriverField() : nullptr;
+		UNetDriver* driver = NetDriver();
 		if (!driver) {
-			LOG_INFO("status({}): no NetDriver", reason);
+			LOG_INFO("status({}): no NetDriver", source);
 			return;
 		}
 
-		int tick_rate = 0;
-		ReadField(driver, "UNetDriver.NetServerMaxTickRate", tick_rate);
+		TArray<UNetConnection*>* connections = fields::client_connections.Get(driver);
+		if (!connections) {
+			LOG_INFO("status({}): no connection list", source);
+			return;
+		}
 
+		const int tick_rate = Read(fields::server_max_tick_rate, driver);
 		float dormancy_multiplier = 0.0f;
-		if (float* value = SafeGlobal<float>("Global.GDormancyLimitMultiplier")) {
+		if (float* value = fields::dormancy_limit_multiplier.Get()) {
 			dormancy_multiplier = *value;
 		}
 
 		unsigned long long total_out_bps = 0;
 		unsigned long long total_peak_out_bps = 0;
-		int index = 0;
-
-		TArray<UNetConnection*>* connections = ConnectionList(driver);
-		if (!connections) {
-			LOG_INFO("status({}): no connection list", reason);
-			return;
-		}
+		int connection_index = 0;
 
 		for (int i = 0; i < connections->Num(); ++i) {
 			UNetConnection* connection = (*connections)[i];
@@ -302,37 +280,24 @@ namespace
 				continue;
 			}
 
-			int net_speed = 0, queued_bytes = 0;
-			unsigned int out_bytes = 0, in_lost = 0, out_lost = 0;
-			float dormancy = 0.0f, avg_lag = 0.0f;
-			ReadField(connection, "UPlayer.CurrentNetSpeed", net_speed);
-			ReadField(connection, "UNetConnection.QueuedBytes", queued_bytes);
-			ReadField(connection, "UNetConnection.OutBytes", out_bytes);
-			ReadField(connection, "UNetConnection.InPacketsLost", in_lost);
-			ReadField(connection, "UNetConnection.OutPacketsLost", out_lost);
-			ReadField(connection, "UNetConnection.DormancyRate", dormancy);
-			ReadField(connection, "UNetConnection.AvgLag", avg_lag);
+			const ConnectionSample sample = ReadConnection(connection);
+			ConnectionPeaks& peaks = g_peaks[connection];
 
-			ConnPeaks& peaks = g_peaks[connection];
-
-			// Per-connection detail is verbose: periodic lines only when Debug is on,
-			// NetTune.Status always shows it. The summary below is always logged.
 			if (!periodic || g_config.debug) {
 				LOG_INFO("status({}): conn[{}] ip='{}' netspeed={} queued={} outBps={} peakOutBps={} dorm={} peakDorm={} lost={}/{} lag={}",
-					reason, index, connection->ClientGivenIPField().ToString(),
-					net_speed, queued_bytes, out_bytes, peaks.peak_out_bps,
-					dormancy, peaks.peak_dorm, in_lost, out_lost, avg_lag);
+					source, connection_index, connection->ClientGivenIPField().ToString(),
+					sample.net_speed, sample.queued_bytes, sample.out_bps, peaks.out_bps,
+					sample.dormancy_rate, peaks.dormancy_rate,
+					sample.packets_lost_in, sample.packets_lost_out, sample.avg_lag_seconds);
 			}
 
-			total_out_bps += out_bytes;
-			total_peak_out_bps += peaks.peak_out_bps;
-			++index;
+			total_out_bps += sample.out_bps;
+			total_peak_out_bps += peaks.out_bps;
+			++connection_index;
 
-			peaks = ConnPeaks{};   // peaks cover the interval since the previous status line
+			peaks = ConnectionPeaks{};
 		}
 
-		// totalPeak is what actually has to fit the link; budgetUtilPct is only shown
-		// when BandwidthBudgetMbps is configured.
 		const double total_peak_mbps = static_cast<double>(total_peak_out_bps) * 8.0 / 1e6;
 		float budget_utilization = -1.0f;
 		if (g_config.bandwidth_budget_mbps > 0.0f) {
@@ -341,46 +306,42 @@ namespace
 		}
 
 		LOG_INFO("status({}): tickrate={} observedFps={} dormancyMult={} connections={} totalOutBps={} totalPeakMbps={} budgetUtilPct={}",
-			reason, tick_rate, g_observed_fps, dormancy_multiplier,
-			index, total_out_bps, total_peak_mbps, budget_utilization);
+			source, tick_rate, g_observed_fps, dormancy_multiplier,
+			connection_index, total_out_bps, total_peak_mbps, budget_utilization);
 	}
 
 	void Tick(float delta_seconds)
 	{
-		++g_ticks;
-
-		g_tick_window_seconds += delta_seconds;
-		++g_tick_window_count;
-		if (g_tick_window_seconds >= 1.0f) {
-			g_observed_fps = static_cast<float>(g_tick_window_count) / g_tick_window_seconds;
-			g_tick_window_seconds = 0.0f;
-			g_tick_window_count = 0;
+		g_fps_window_seconds += delta_seconds;
+		++g_fps_window_ticks;
+		if (g_fps_window_seconds >= 1.0f) {
+			g_observed_fps = static_cast<float>(g_fps_window_ticks) / g_fps_window_seconds;
+			g_fps_window_seconds = 0.0f;
+			g_fps_window_ticks = 0;
 		}
 
-		g_since_reconcile += delta_seconds;
-		g_since_status += delta_seconds;
+		g_seconds_since_reconcile += delta_seconds;
+		g_seconds_since_status += delta_seconds;
 
-		TrackPeaks();
+		UpdatePeaks();
 
-		if (g_since_reconcile >= g_config.reconcile_interval_seconds) {
-			g_since_reconcile = 0.0f;
+		if (g_seconds_since_reconcile >= g_config.reconcile_interval_seconds) {
+			g_seconds_since_reconcile = 0.0f;
 			Reconcile();
-			PrunePeaks();
+			PruneStalePeaks();
 		}
 
 		if (g_config.status_interval_seconds > 0.0f &&
-			g_since_status >= g_config.status_interval_seconds) {
-			g_since_status = 0.0f;
+			g_seconds_since_status >= g_config.status_interval_seconds) {
+			g_seconds_since_status = 0.0f;
 			LogStatus("periodic", true);
 		}
 	}
 
-	// --- config -------------------------------------------------------------------------
-
 	void ApplyConfig(const nlohmann::json& json)
 	{
 		g_config.debug = json.value("Debug", g_config.debug);
-		g_config.net_server_max_tick_rate = json.value("NetServerMaxTickRate", g_config.net_server_max_tick_rate);
+		g_config.server_max_tick_rate = json.value("NetServerMaxTickRate", g_config.server_max_tick_rate);
 		g_config.current_net_speed = json.value("CurrentNetSpeed", g_config.current_net_speed);
 		g_config.dormancy_limit_multiplier = json.value("DormancyLimitMultiplier", g_config.dormancy_limit_multiplier);
 		g_config.reconcile_interval_seconds = json.value("ReconcileIntervalSeconds", g_config.reconcile_interval_seconds);
@@ -406,7 +367,7 @@ namespace
 	{
 		LoadConfig();
 		LOG_INFO("reloaded: tickrate={} currentNetSpeed={} dormancyMult={}",
-			g_config.net_server_max_tick_rate, g_config.current_net_speed,
+			g_config.server_max_tick_rate, g_config.current_net_speed,
 			g_config.dormancy_limit_multiplier);
 		Reconcile();
 	}
@@ -430,7 +391,7 @@ extern "C" __declspec(dllexport) void Plugin_Init()
 	Reconcile();
 
 	LOG_INFO("loaded: tickrate={} currentNetSpeed={} dormancyMult={}",
-		g_config.net_server_max_tick_rate, g_config.current_net_speed,
+		g_config.server_max_tick_rate, g_config.current_net_speed,
 		g_config.dormancy_limit_multiplier);
 }
 
