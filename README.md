@@ -89,31 +89,36 @@ always `(f*195 + 30) * multiplier` actors per second.
 
 ## Recommended config (13 maps, 200 Mbit/s, up to 100 players)
 
+Matches the shipped `Configs/config.json`:
+
 ```json
 {
-  "Debug": false,
+  "Debug": true,
+  "BandwidthBudgetMbps": 15.0,
+  "StatusIntervalSeconds": 300.0,
+
   "NetServerMaxTickRate": 20,
   "CurrentNetSpeed": 60000,
-  "DormancyLimitMultiplier": 6.0,
-  "ReconcileIntervalSeconds": 5.0,
-  "StatusIntervalSeconds": 300.0,
-  "BandwidthBudgetMbps": 15.4
+  "DormancyLimitMultiplier": 5.0,
+  "ReconcileIntervalSeconds": 5.0
 }
 ```
 
-* `DormancyLimitMultiplier = 6.0` -> ~1350 new actors/s per client; a 2000-structure base loads in
-  ~1.5 s. The ceiling was reached at multipliers 1, 2, 3, 4 and 5; at 6 only the most populated map
-  still hit it. With 30 players on the host the frame rate already dipped to ~16 of the target 20,
-  so 5-6 is the practical ceiling at this player count. Stop raising when `peakDorm` stays `0` or
-  well below the ceiling - the remaining limit is then the client (rendering / streaming).
+* `DormancyLimitMultiplier = 5.0` -> ~1125 new actors/s per client; a 2000-structure base loads in
+  ~1.8 s. The ceiling was reached at multipliers 1, 2, 3, 4 and 5, so the lever is still live -
+  but with 30 players on the host the frame rate already dipped to ~16 of the target 20, so `5.0`
+  is the operating point for this player count. Stop raising when `peakDorm` stays `0` or well
+  below the ceiling - the remaining limit is then the client (rendering / streaming).
 * `ReconcileIntervalSeconds = 5.0` -> a freshly joined client sits at the server default `14000`
   until the next reconcile; this shortens the slow start of every session (worst at a wipe).
 * `NetServerMaxTickRate = 20` held `observedFps ~20` with 26 players on the host; `15` is the
   CPU-conservative alternative. It does not affect base loading.
-* Bandwidth: the summed per-map peak was 5.3 / 8.0 / 4.4 Mbit/s of 200 at multipliers 1 / 3 / 6 -
-  the link is not the limit. `CurrentNetSpeed = 40000` is the fallback if it ever is.
-
-For testing use `Debug: true` and `StatusIntervalSeconds: 15`; the tuned values are the same.
+* `BandwidthBudgetMbps = 15.0` is the equal share of the shared 200 Mbit/s link (200 / 13) used for
+  `budgetUtilPct`; it is a gauge, not a limiter. The summed per-map peak was 5.3 / 8.0 / 14.9
+  Mbit/s of 200 at multipliers 1 / 3 / 5 - the link is not the limit.
+  `CurrentNetSpeed = 40000` is the fallback if it ever is.
+* `Debug: true` keeps the per-connection detail in the periodic line; set it to `false` once
+  observation is not needed.
 
 ## Build
 
