@@ -46,7 +46,6 @@
 
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 
 #pragma comment(lib, "ArkApi.lib")
 
@@ -80,9 +79,11 @@ namespace
 	{
 		unsigned int peak_out_bps = 0;
 		float peak_dorm = 0.0f;
+		unsigned long long last_seen = 0;
 	};
 
 	std::unordered_map<UNetConnection*, ConnPeaks> g_peaks;
+	unsigned long long g_peaks_generation = 0;
 
 	// --- field access -------------------------------------------------------------------
 	// ArkApi::GetAddress(base, name) returns 0 for a missing symbol, and returns base
@@ -131,6 +132,13 @@ namespace
 
 		out = *field;
 		return true;
+	}
+
+	// ClientConnectionsField() returns the TArray by value (a heap copy), so take the field
+	// pointer instead - the tick path must not allocate.
+	TArray<UNetConnection*>* ConnectionList(UNetDriver* driver)
+	{
+		return SafeField<TArray<UNetConnection*>>(driver, "UNetDriver.ClientConnections");
 	}
 
 	// --- apply --------------------------------------------------------------------------
@@ -202,7 +210,7 @@ namespace
 	// --- reporting ----------------------------------------------------------------------
 
 	// Sampled every tick so a short spike (a base loading) is not missed by the
-	// periodic status line.
+	// periodic status line. No allocations on this path.
 	void TrackPeaks()
 	{
 		UWorld* world = ArkApi::GetApiUtils().GetWorld();
@@ -211,13 +219,18 @@ namespace
 			return;
 		}
 
-		std::unordered_set<UNetConnection*> live;
-		for (UNetConnection* connection : driver->ClientConnectionsField()) {
+		TArray<UNetConnection*>* connections = ConnectionList(driver);
+		if (!connections) {
+			return;
+		}
+
+		++g_peaks_generation;
+
+		for (int i = 0; i < connections->Num(); ++i) {
+			UNetConnection* connection = (*connections)[i];
 			if (!connection) {
 				continue;
 			}
-
-			live.insert(connection);
 
 			unsigned int out_bytes = 0;
 			float dormancy = 0.0f;
@@ -225,6 +238,7 @@ namespace
 			ReadField(connection, "UNetConnection.DormancyRate", dormancy);
 
 			ConnPeaks& peaks = g_peaks[connection];
+			peaks.last_seen = g_peaks_generation;
 			if (out_bytes > peaks.peak_out_bps) {
 				peaks.peak_out_bps = out_bytes;
 			}
@@ -232,9 +246,13 @@ namespace
 				peaks.peak_dorm = dormancy;
 			}
 		}
+	}
 
+	// Dropped entries for closed connections; run from the (rare) reconcile path.
+	void PrunePeaks()
+	{
 		for (auto it = g_peaks.begin(); it != g_peaks.end();) {
-			if (live.count(it->first)) {
+			if (it->second.last_seen == g_peaks_generation) {
 				++it;
 			}
 			else {
@@ -264,7 +282,14 @@ namespace
 		unsigned long long total_peak_out_bps = 0;
 		int index = 0;
 
-		for (UNetConnection* connection : driver->ClientConnectionsField()) {
+		TArray<UNetConnection*>* connections = ConnectionList(driver);
+		if (!connections) {
+			LOG_INFO("status({}): no connection list", reason);
+			return;
+		}
+
+		for (int i = 0; i < connections->Num(); ++i) {
+			UNetConnection* connection = (*connections)[i];
 			if (!connection) {
 				continue;
 			}
@@ -328,6 +353,7 @@ namespace
 		if (g_since_reconcile >= g_config.reconcile_interval_seconds) {
 			g_since_reconcile = 0.0f;
 			Reconcile();
+			PrunePeaks();
 		}
 
 		if (g_config.status_interval_seconds > 0.0f &&
