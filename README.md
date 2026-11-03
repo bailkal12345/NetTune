@@ -58,6 +58,8 @@ and runs on the defaults - it does not create the file):
 | `Debug` | `false` | per-connection detail in the periodic status line |
 
 Re-applying is needed because the engine can reset the values (a client can resend `NMT_Netspeed`).
+Every actual change is logged at debug level (`server_max_tick_rate changed`, `current_net_speed
+changed`, `dormancy_limit_multiplier changed`), so with `Debug: false` a steady state is silent.
 
 ## Telemetry
 

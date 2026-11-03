@@ -15,10 +15,10 @@
 
 #pragma comment(lib, "ArkApi.lib")
 
+#define PLUGIN_NAME "NetTune"
+
 namespace
 {
-	constexpr char kPluginName[] = "NetTune";
-
 	struct PluginConfig
 	{
 		bool debug = false;
@@ -97,17 +97,15 @@ namespace
 			return;
 		}
 
-		int driver_changed = 0;
-		int connections_changed = 0;
-		int globals_changed = 0;
-
 		if (g_config.server_max_tick_rate > 0) {
-			driver_changed +=
-				fields::server_max_tick_rate.Set(driver, g_config.server_max_tick_rate);
+			if (fields::server_max_tick_rate.Set(driver, g_config.server_max_tick_rate)) {
+				LOG_DEBUG("server_max_tick_rate changed -> {}", g_config.server_max_tick_rate);
+			}
 		}
 
 		if (g_config.current_net_speed > 0) {
 			if (TArray<UNetConnection*>* connections = fields::client_connections.Get(driver)) {
+				int connections_changed = 0;
 				for (int i = 0; i < connections->Num(); ++i) {
 					UNetConnection* connection = (*connections)[i];
 					if (connection) {
@@ -115,16 +113,17 @@ namespace
 							fields::current_net_speed.Set(connection, g_config.current_net_speed);
 					}
 				}
+				if (connections_changed > 0) {
+					LOG_DEBUG("current_net_speed changed -> {} ({} connections)",
+						g_config.current_net_speed, connections_changed);
+				}
 			}
 		}
 
 		if (g_config.dormancy_limit_multiplier > 0.0f) {
-			globals_changed += fields::dormancy_limit_multiplier.Set(g_config.dormancy_limit_multiplier);
-		}
-
-		if (driver_changed + connections_changed + globals_changed > 0) {
-			LOG_INFO("applied driver={} connections={} globals={}",
-				driver_changed, connections_changed, globals_changed);
+			if (fields::dormancy_limit_multiplier.Set(g_config.dormancy_limit_multiplier)) {
+				LOG_DEBUG("dormancy_limit_multiplier changed -> {}", g_config.dormancy_limit_multiplier);
+			}
 		}
 	}
 
@@ -272,7 +271,7 @@ namespace
 		g_config = PluginConfig{};
 
 		try {
-			ApplyConfig(Config::Read(kPluginName));
+			ApplyConfig(Config::Read(PLUGIN_NAME));
 		}
 		catch (const std::exception& error) {
 			LOG_WARN("config not loaded ({}): using defaults", error.what());
@@ -298,7 +297,7 @@ namespace
 
 extern "C" __declspec(dllexport) void Plugin_Init()
 {
-	LOG_INIT(kPluginName);
+	LOG_INIT(PLUGIN_NAME);
 
 	LoadConfig();
 
@@ -308,7 +307,7 @@ extern "C" __declspec(dllexport) void Plugin_Init()
 
 	Reconcile();
 
-	LOG_INFO("loaded: tickrate={} currentNetSpeed={} dormancyMult={}",
+	LOG_DEBUG("loaded: tickrate={} currentNetSpeed={} dormancyMult={}",
 		g_config.server_max_tick_rate, g_config.current_net_speed,
 		g_config.dormancy_limit_multiplier);
 }
