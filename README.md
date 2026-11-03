@@ -70,8 +70,12 @@ a just-joined connection). Peaks are sampled every tick, so a base-load spike is
 
 `peakDorm > 0` means the new-actor throttle is the binding limit: after a tick `DormancyRate` is
 either `0` (the actor list was exhausted before the budget was reached) or at most
-`inc = tickrate / ((f*195 + 30) * multiplier)` (the budget was reached). It can never approach
-`1.0`, so any non-zero peak is the ceiling.
+`inc = 1 / ((f*195 + 30) * multiplier * DeltaSeconds)` (the budget was reached). It can never
+approach `1.0`, so any non-zero peak is the ceiling. `DeltaSeconds` is the actual frame time of the
+frame that set the peak, so at a target of 20 the ceiling is `20 / ((195+30) * multiplier)` and a
+momentarily faster frame pushes the observed peak slightly above it (e.g. `0.0180` vs `0.0178` at
+`multiplier = 5`). The new-actor rate itself does not depend on the frame rate: `inc * fps` is
+always `(f*195 + 30) * multiplier` actors per second.
 
 `totalPeakMbps` is the peak summed over all connections - this is what has to fit the link;
 `budgetUtilPct` compares it against `BandwidthBudgetMbps`.
@@ -98,9 +102,10 @@ either `0` (the actor list was exhausted before the budget was reached) or at mo
 ```
 
 * `DormancyLimitMultiplier = 6.0` -> ~1350 new actors/s per client; a 2000-structure base loads in
-  ~1.5 s. The ceiling was reached at multipliers 1, 2, 3 and 4; at 6 only the most populated map
-  still hit it, so 12 of 13 maps are no longer throttled. Stop raising when `peakDorm` stays `0`
-  or well below the ceiling - the remaining limit is then the client (rendering / streaming).
+  ~1.5 s. The ceiling was reached at multipliers 1, 2, 3, 4 and 5; at 6 only the most populated map
+  still hit it. With 30 players on the host the frame rate already dipped to ~16 of the target 20,
+  so 5-6 is the practical ceiling at this player count. Stop raising when `peakDorm` stays `0` or
+  well below the ceiling - the remaining limit is then the client (rendering / streaming).
 * `ReconcileIntervalSeconds = 5.0` -> a freshly joined client sits at the server default `14000`
   until the next reconcile; this shortens the slow start of every session (worst at a wipe).
 * `NetServerMaxTickRate = 20` held `observedFps ~20` with 26 players on the host; `15` is the
