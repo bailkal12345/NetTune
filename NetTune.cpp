@@ -75,6 +75,14 @@ namespace
 
 	// Per-connection peaks since the previous status line. UNetConnection::OutBytes and
 	// DormancyRate are reset every StatPeriod (1 s), so OutBytes is already bytes/second.
+	//
+	// peakDorm tells whether the new-actor throttle is the binding limit:
+	// ServerReplicateActors keeps adding newly relevant actors while DormancyRate <= 1.0 and
+	// DormancyRate decays by 1.0 per tick, so after a tick it is either 0 (the actor list was
+	// exhausted before the budget was reached) or in (0, inc] with
+	// inc = tickrate / ((f*195 + 30) * multiplier) (the budget was reached). It can never
+	// approach 1.0 - the ceiling is inc, e.g. ~0.067 at tickrate 15 and CurrentNetSpeed 60000.
+	// So peakDorm > 0 means the throttle IS the binding limit.
 	struct ConnPeaks
 	{
 		unsigned int peak_out_bps = 0;

@@ -38,7 +38,14 @@ collects what was **not** confirmed, so it deliberately stays out of the plugin.
 * **New actors per second** is computed from the dormancy increment
   (`(f*195 + 30) * GDormancyLimitMultiplier`), not counted. `peakDorm` is sampled in a
   `UWorld::Tick` hook that runs **before** the net tick, so it is the post-decay leftover of the
-  previous frame (approximately the increment itself); it cannot count channels created.
+  previous frame. It is either `0` (the actor list was exhausted) or in `(0, inc]` with
+  `inc = tickrate / ((f*195+30) * multiplier)` (the budget was reached), so `peakDorm > 0` means the
+  cap was reached. It can never approach `1.0` (the ceiling is `inc`), which is why an earlier
+  version of this file wrongly read a near-zero `peakDorm` as "the throttle does not bind".
+* **`observedFps` below `NetServerMaxTickRate`.** On an idle single server the engine honours the
+  value exactly (`20 -> 19.99`, `15 -> 14.95`). On a loaded host it does not (`15 -> ~13`,
+  `20 -> ~15`), i.e. the shortfall is CPU/load, not an engine clamp. It does not affect the
+  new-actor rate (that cap is per second, not per tick).
 * **Packet-rate ceiling** - `UNetConnection.MaxPacket` was observed at `512` bytes and `FlushNet`
   sends the accumulated `SendBuffer` as one packet, but the real packets/second x payload ceiling was
   never isolated (it did not bind at the settings tested).

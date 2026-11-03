@@ -83,9 +83,21 @@ when `Debug` is `true` (`NetTune.Status` always shows it). Set `StatusIntervalSe
 periodic line off entirely.
 
 Per connection: `netspeed`, `queued` (`QueuedBytes`), `outBps` (current), `peakOutBps` (peak since
-the previous status line), `dorm` / `peakDorm` (the new-actor throttle - if `peakDorm` sits near
-`1.0` the throttle is binding), and `lost=in/out` plus `lag` (`AvgLag`, seconds). Peaks are sampled
-every tick, so a short spike (a base loading) is not missed, and are reset by each status line.
+the previous status line), `dorm` / `peakDorm`, and `lost=in/out` plus `lag` (`AvgLag`, seconds).
+Peaks are sampled every tick, so a short spike (a base loading) is not missed, and are reset by each
+status line.
+
+`peakDorm` tells whether the new-actor throttle is the binding limit. `ServerReplicateActors` keeps
+adding newly relevant actors while the connection's `DormancyRate` is `<= 1.0`, and `DormancyRate`
+decays by `1.0` per tick, so after a tick it is either
+
+* `0` - the actor list was exhausted before the budget was reached (the throttle is not the limit), or
+* in `(0, inc]`, `inc = tickrate / ((f*195 + 30) * multiplier)` - the budget was reached.
+
+It can never approach `1.0`: the ceiling is `inc` (e.g. `~0.067` at tickrate 15 with
+`CurrentNetSpeed = 60000`). So **`peakDorm > 0` means the throttle is the binding limit**. In the
+collected production logs the cap was reached in ~13% of connection samples, always near the ceiling,
+so during base loads the throttle does bind and `GDormancyLimitMultiplier` is the lever.
 
 `totalPeakMbps` is the peak summed over all connections - this is what has to fit the link;
 `budgetUtilPct` compares it against `BandwidthBudgetMbps`.
