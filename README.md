@@ -53,6 +53,9 @@ Measured to have no effect, so they are not configurable: `UNetDriver.MaxClientR
 (they do not affect the initial load; changing a structure's cull distance does not even change the
 set of replicated actors).
 
+See `RESEARCH.md` for the levers that were **not** confirmed (or only read in code) and therefore
+stay out of the plugin.
+
 ## Configuration
 
 `Configs/config.json` (hot-reloadable, no restart):
