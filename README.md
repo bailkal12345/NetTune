@@ -111,32 +111,48 @@ so during base loads the throttle does bind and `GDormancyLimitMultiplier` is th
 
 ## Recommended config (13 maps, 200 Mbit/s, up to 100 players)
 
-`200 Mbit/s / 13 maps = 15.4 Mbit/s` per server. The measured peak egress is `36-296 KB/s` per
-client, so 30 players loading on one map is ~`71 Mbit/s` and fits; `GDormancyLimitMultiplier = 3`
-would push the same case to ~`213 Mbit/s` and break the link, so it stays `1.0`.
+`200 Mbit/s / 13 maps = 15.4 Mbit/s` per server, but the link is **shared**: what matters is the
+total. Measured on a live 13-map host: the sum of the per-map peaks was **5.3 Mbit/s** of 200 at
+`multiplier = 1` and **8.0 Mbit/s** at `multiplier = 3`, i.e. ~4%. The single-client peaks are
+`~320-590 KB/s` and happen only while a base loads, so 20-30 simultaneous loads on one map is a few
+tens of Mbit/s - well inside the link.
+
+`peakDorm` shows whether the new-actor throttle is the binding limit: it sits exactly at
+`inc = tickrate / ((f*195+30) * multiplier)` when the budget is reached. It was reached at
+`multiplier = 1` (0.067), `2` (0.044) **and** `3` (0.0296), so the multiplier is the lever and it has
+been safe to raise it.
+
+Loading time is roughly `structures / (225 * multiplier)` seconds per client, so the returns
+diminish: a 2000-structure base is ~8.9 s at `1`, ~3.0 s at `3`, ~2.2 s at `4`, ~1.5 s at `6`.
+Raise while `peakDorm` keeps landing on the ceiling; if the load still feels slow once it does not,
+the remaining limit is on the client (rendering / streaming), not on the server.
 
 ```json
 {
   "Debug": false,
-  "NetServerMaxTickRate": 15,
+  "NetServerMaxTickRate": 20,
   "CurrentNetSpeed": 60000,
-  "DormancyLimitMultiplier": 0.0,
-  "ReconcileIntervalSeconds": 15.0,
+  "DormancyLimitMultiplier": 4.0,
+  "ReconcileIntervalSeconds": 5.0,
   "StatusIntervalSeconds": 300.0,
   "BandwidthBudgetMbps": 15.4
 }
 ```
 
-`NetServerMaxTickRate = 15` is the CPU knob (13 maps on one machine) and does **not** affect base
-loading; use `20` if the CPU has headroom. Conservative fallback if the link is tight:
-`CurrentNetSpeed = 40000` (about 1.6x slower loading, about half the peak traffic).
+* `DormancyLimitMultiplier = 4.0` -> 900 new actors/s per client (was 225 at `1.0`).
+* `ReconcileIntervalSeconds = 5.0` -> a freshly joined client is at the server default `14000` until
+  the next reconcile, so this shortens the slow start of every session (worst at a wipe).
+* `NetServerMaxTickRate = 20` is the CPU knob and does **not** affect base loading; the effective
+  rate on a loaded host is a bit lower (e.g. `16-20` for a target of `20`), and it dips during load
+  bursts. `15` is the CPU-conservative alternative.
+* Conservative fallback if the link is tight: `CurrentNetSpeed = 40000`.
 
 ### Test vs production
 
 | | `Debug` | `StatusIntervalSeconds` | Purpose |
 | --- | --- | --- | --- |
 | Test | `true` | `15` | full per-connection telemetry, easy to catch a base load |
-| Production | `false` | `0` | quiet; use `NetTune.Status` on demand |
+| Production | `false` | `300` | summary only; use `NetTune.Status` for the detail |
 
 The tuned values (`NetServerMaxTickRate`, `CurrentNetSpeed`, `DormancyLimitMultiplier`) are the same
 in both; only the telemetry verbosity differs. To compare levers, change one value at a time
