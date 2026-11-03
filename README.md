@@ -66,19 +66,56 @@ stay out of the plugin.
 | `CurrentNetSpeed` | `60000` | per-client new-actor budget (`14000..60000`); `0` = leave unchanged |
 | `DormancyLimitMultiplier` | `0.0` | `GDormancyLimitMultiplier`; `0.0` = leave unchanged (ARK default `1.0`) |
 | `ReconcileIntervalSeconds` | `15.0` | how often the values are re-checked for drift |
-| `StatusIntervalSeconds` | `60.0` | periodic status line (debug level); `0` = off |
+| `StatusIntervalSeconds` | `60.0` | periodic status line (info level); `0` = off |
+| `BandwidthBudgetMbps` | `0.0` | per-server egress budget used for `budgetUtilPct`; `0.0` = do not show it |
 | `Debug` | `false` | raise the plugin log level to debug |
 
 Re-applying is needed because the engine can still reset the values: `UWorld::Listen` resets
 `MaxClientRate` on a map load, and a client can resend `NMT_Netspeed`. Nothing is written while the
 values already match.
 
+## Telemetry
+
+The status line is emitted at info level every `StatusIntervalSeconds` and on `NetTune.Status`. It
+reports, per connection: `netspeed`, `queued` (`QueuedBytes`), `outBps` (current), `peakOutBps`
+(peak since the previous status line), `dorm` / `peakDorm` (the new-actor throttle - if `peakDorm`
+sits near `1.0` the throttle is binding), and `lost=in/out` plus `lag` (`AvgLag`, seconds). Peaks are
+sampled every tick, so a short spike (a base loading) is not missed, and are reset by each status
+line.
+
+The summary line adds `totalOutBps`, `totalPeakMbps` (the peak summed over all connections - this is
+what has to fit the link) and `budgetUtilPct` (against `BandwidthBudgetMbps`).
+
+For a busy host prefer a larger `StatusIntervalSeconds` (e.g. `300`) to keep the log quiet.
+
 ## RCON
 
 | Command | Effect |
 | --- | --- |
 | `NetTune.Reload` | re-read `config.json` and reconcile immediately |
-| `NetTune.Status` | log the current values (tick rate, observed FPS, per-connection net speed) |
+| `NetTune.Status` | log the current values and the telemetry above |
+
+## Recommended config (13 maps, 200 Mbit/s, up to 100 players)
+
+`200 Mbit/s / 13 maps = 15.4 Mbit/s` per server. The measured peak egress is `36-296 KB/s` per
+client, so 30 players loading on one map is ~`71 Mbit/s` and fits; `GDormancyLimitMultiplier = 3`
+would push the same case to ~`213 Mbit/s` and break the link, so it stays `1.0`.
+
+```json
+{
+  "Debug": false,
+  "NetServerMaxTickRate": 15,
+  "CurrentNetSpeed": 60000,
+  "DormancyLimitMultiplier": 0.0,
+  "ReconcileIntervalSeconds": 15.0,
+  "StatusIntervalSeconds": 300.0,
+  "BandwidthBudgetMbps": 15.4
+}
+```
+
+`NetServerMaxTickRate = 15` is the CPU knob (13 maps on one machine) and does **not** affect base
+loading; use `20` if the CPU has headroom. Conservative fallback if the link is tight:
+`CurrentNetSpeed = 40000` (about 1.6x slower loading, about half the peak traffic).
 
 ## Build
 

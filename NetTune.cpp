@@ -45,6 +45,8 @@
 #include <json.hpp>
 
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 #pragma comment(lib, "ArkApi.lib")
 
@@ -59,7 +61,8 @@ namespace
 		int current_net_speed = 60000;           // 0 = leave unchanged
 		float dormancy_limit_multiplier = 0.0f;  // 0 = leave unchanged
 		float reconcile_interval_seconds = 15.0f;
-		float status_interval_seconds = 60.0f;   // logged at debug level
+		float status_interval_seconds = 60.0f;   // periodic status line (info level); 0 = off
+		float bandwidth_budget_mbps = 0.0f;      // per-server egress budget for the utilisation %; 0 = off
 	};
 
 	PluginConfig g_config;
@@ -70,6 +73,16 @@ namespace
 	float g_observed_fps = 0.0f;
 	float g_since_reconcile = 0.0f;
 	float g_since_status = 0.0f;
+
+	// Per-connection peaks since the previous status line. UNetConnection::OutBytes and
+	// DormancyRate are reset every StatPeriod (1 s), so OutBytes is already bytes/second.
+	struct ConnPeaks
+	{
+		unsigned int peak_out_bps = 0;
+		float peak_dorm = 0.0f;
+	};
+
+	std::unordered_map<UNetConnection*, ConnPeaks> g_peaks;
 
 	// --- field access -------------------------------------------------------------------
 	// ArkApi::GetAddress(base, name) returns 0 for a missing symbol, and returns base
@@ -188,6 +201,48 @@ namespace
 
 	// --- reporting ----------------------------------------------------------------------
 
+	// Sampled every tick so a short spike (a base loading) is not missed by the
+	// periodic status line.
+	void TrackPeaks()
+	{
+		UWorld* world = ArkApi::GetApiUtils().GetWorld();
+		UNetDriver* driver = world ? world->NetDriverField() : nullptr;
+		if (!driver) {
+			return;
+		}
+
+		std::unordered_set<UNetConnection*> live;
+		for (UNetConnection* connection : driver->ClientConnectionsField()) {
+			if (!connection) {
+				continue;
+			}
+
+			live.insert(connection);
+
+			unsigned int out_bytes = 0;
+			float dormancy = 0.0f;
+			ReadField(connection, "UNetConnection.OutBytes", out_bytes);
+			ReadField(connection, "UNetConnection.DormancyRate", dormancy);
+
+			ConnPeaks& peaks = g_peaks[connection];
+			if (out_bytes > peaks.peak_out_bps) {
+				peaks.peak_out_bps = out_bytes;
+			}
+			if (dormancy > peaks.peak_dorm) {
+				peaks.peak_dorm = dormancy;
+			}
+		}
+
+		for (auto it = g_peaks.begin(); it != g_peaks.end();) {
+			if (live.count(it->first)) {
+				++it;
+			}
+			else {
+				it = g_peaks.erase(it);
+			}
+		}
+	}
+
 	void LogStatus(const char* reason)
 	{
 		UWorld* world = ArkApi::GetApiUtils().GetWorld();
@@ -205,28 +260,52 @@ namespace
 			dormancy_multiplier = *value;
 		}
 
-		LOG_INFO("status({}): tickrate={} observedFps={} dormancyMult={}",
-			reason, tick_rate, g_observed_fps, dormancy_multiplier);
-
+		unsigned long long total_out_bps = 0;
+		unsigned long long total_peak_out_bps = 0;
 		int index = 0;
+
 		for (UNetConnection* connection : driver->ClientConnectionsField()) {
 			if (!connection) {
 				continue;
 			}
 
 			int net_speed = 0, queued_bytes = 0;
-			unsigned int out_bytes = 0;
-			float dormancy = 0.0f;
+			unsigned int out_bytes = 0, in_lost = 0, out_lost = 0;
+			float dormancy = 0.0f, avg_lag = 0.0f;
 			ReadField(connection, "UPlayer.CurrentNetSpeed", net_speed);
 			ReadField(connection, "UNetConnection.QueuedBytes", queued_bytes);
 			ReadField(connection, "UNetConnection.OutBytes", out_bytes);
+			ReadField(connection, "UNetConnection.InPacketsLost", in_lost);
+			ReadField(connection, "UNetConnection.OutPacketsLost", out_lost);
 			ReadField(connection, "UNetConnection.DormancyRate", dormancy);
+			ReadField(connection, "UNetConnection.AvgLag", avg_lag);
 
-			LOG_INFO("status({}): conn[{}] ip='{}' netspeed={} queued={} outBps={} dorm={}",
+			ConnPeaks& peaks = g_peaks[connection];
+
+			LOG_INFO("status({}): conn[{}] ip='{}' netspeed={} queued={} outBps={} peakOutBps={} dorm={} peakDorm={} lost={}/{} lag={}",
 				reason, index, connection->ClientGivenIPField().ToString(),
-				net_speed, queued_bytes, out_bytes, dormancy);
+				net_speed, queued_bytes, out_bytes, peaks.peak_out_bps,
+				dormancy, peaks.peak_dorm, in_lost, out_lost, avg_lag);
+
+			total_out_bps += out_bytes;
+			total_peak_out_bps += peaks.peak_out_bps;
 			++index;
+
+			peaks = ConnPeaks{};   // peaks cover the interval since the previous status line
 		}
+
+		// totalPeak is what actually has to fit the link; budgetUtilPct is only shown
+		// when BandwidthBudgetMbps is configured.
+		const double total_peak_mbps = static_cast<double>(total_peak_out_bps) * 8.0 / 1e6;
+		float budget_utilization = -1.0f;
+		if (g_config.bandwidth_budget_mbps > 0.0f) {
+			budget_utilization = static_cast<float>(
+				total_peak_mbps / static_cast<double>(g_config.bandwidth_budget_mbps) * 100.0);
+		}
+
+		LOG_INFO("status({}): tickrate={} observedFps={} dormancyMult={} connections={} totalOutBps={} totalPeakMbps={} budgetUtilPct={}",
+			reason, tick_rate, g_observed_fps, dormancy_multiplier,
+			index, total_out_bps, total_peak_mbps, budget_utilization);
 	}
 
 	void Tick(float delta_seconds)
@@ -243,6 +322,8 @@ namespace
 
 		g_since_reconcile += delta_seconds;
 		g_since_status += delta_seconds;
+
+		TrackPeaks();
 
 		if (g_since_reconcile >= g_config.reconcile_interval_seconds) {
 			g_since_reconcile = 0.0f;
@@ -266,6 +347,7 @@ namespace
 		g_config.dormancy_limit_multiplier = json.value("DormancyLimitMultiplier", g_config.dormancy_limit_multiplier);
 		g_config.reconcile_interval_seconds = json.value("ReconcileIntervalSeconds", g_config.reconcile_interval_seconds);
 		g_config.status_interval_seconds = json.value("StatusIntervalSeconds", g_config.status_interval_seconds);
+		g_config.bandwidth_budget_mbps = json.value("BandwidthBudgetMbps", g_config.bandwidth_budget_mbps);
 	}
 
 	void LoadConfig()

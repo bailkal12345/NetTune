@@ -4,5 +4,6 @@
   "CurrentNetSpeed": 60000,
   "DormancyLimitMultiplier": 0.0,
   "ReconcileIntervalSeconds": 15.0,
-  "StatusIntervalSeconds": 60.0
+  "StatusIntervalSeconds": 60.0,
+  "BandwidthBudgetMbps": 0.0
 }
