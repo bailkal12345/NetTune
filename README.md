@@ -122,6 +122,29 @@ new_actors_per_sec ≈ (f*195 + 30) * GDormancyLimitMultiplier
 прямой рычаг; `CurrentNetSpeed` держать `>= 60000` (запас на медленные
 соединения), выше — смысла нет.
 
+### Экспериментальная проверка модели (live, out-and-back)
+
+Формула инкремента из кода: `inc = tickrate / ((f*195 + 30) * GDormancyLimitMultiplier)`,
+где `f = clamp((CurrentNetSpeed-14000)/46000, 0, 1)`. `peakDorm` ≈ `inc` (остаток
+после последнего инкремента и декремента). Проверено 4 прогонами (игрок отлетал
+от базы и возвращался, база грузилась заново):
+
+| tickrate | CurrentNetSpeed | multiplier | predicted `inc` | measured `peakDorm` |
+|---|---|---|---|---|
+| 20 | 14000 | 1.0 | 0.667 | **0.676** |
+| 20 | 60000 | 1.0 | 0.089 | **0.076** |
+| 20 | 60000 | 3.0 | 0.030 | **0.025** |
+| 40 | 60000 | 1.0 | 0.178 | **0.180** |
+
+Подтверждено замером:
+
+* `CurrentNetSpeed` 14000 → 60000: инкремент падает в ~7.5×, пиковая отдача
+  **44 КБ/с → 296 КБ/с** (реальная перезагрузка базы);
+* `GDormancyLimitMultiplier` 1 → 3: `peakDorm` ровно ×1/3 (темп новых акторов ×3);
+* `tickrate` 20 → 40: `peakDorm` ×2, но **суммарный темп новых акторов/сек не
+  меняется** (инкремент делится на tickrate) — меняются только FPS и гранулярность;
+* `observedFps` == tickrate в обоих прогонах (20 и 39–40).
+
 ### Проверка применения (live)
 
 * `observedFps` (наш собственный тик-колбэк) = **19.7–20.0** при `tickrate=20`
@@ -197,7 +220,12 @@ new_actors_per_sec ≈ (f*195 + 30) * GDormancyLimitMultiplier
 
   "StructureReplicationIntervalMultiplier": 0.0,
   "StructureNetUpdateFrequency": 0.0,
-  "StructureApplyIntervalSeconds": 60.0
+  "StructureApplyIntervalSeconds": 60.0,
+
+  "LoadTestRadius": 30000.0,
+  "LoadTestHideSeconds": 8.0,
+  "LoadTestMeasureSeconds": 20.0,
+  "LoadTestMaxStructures": 20000
 }
 ```
 
@@ -216,6 +244,7 @@ new_actors_per_sec ≈ (f*195 + 30) * GDormancyLimitMultiplier
 | `NetTune.reload` | перечитать конфиг |
 | `NetTune.on` / `NetTune.off` | включить/выключить применение |
 | `NetTune.resetpeaks` | сбросить пиковые значения (`peakOutBps`/`peakDorm`) |
+| `NetTune.loadtest` | воспроизводимая «перезагрузка базы» (спрятать структуры в радиусе и вернуть) |
 
 `status` печатает по соединению: `netspeed`, `queued`, `maxpacket`,
 `dorm`/`peakDorm`, `outBps`/`peakOutBps`, `avglag`, потери.

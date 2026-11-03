@@ -25,5 +25,10 @@
 
   "StructureReplicationIntervalMultiplier": 0.0,
   "StructureNetUpdateFrequency": 0.0,
-  "StructureApplyIntervalSeconds": 60.0
+  "StructureApplyIntervalSeconds": 60.0,
+
+  "LoadTestRadius": 30000.0,
+  "LoadTestHideSeconds": 8.0,
+  "LoadTestMeasureSeconds": 20.0,
+  "LoadTestMaxStructures": 20000
 }

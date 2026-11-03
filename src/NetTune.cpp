@@ -56,6 +56,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "ArkApi.lib")
@@ -102,6 +103,12 @@ namespace
 		float structure_replication_interval_multiplier = 0.f;
 		float structure_net_update_frequency = 0.f;
 		double structure_apply_interval_seconds = 60.0;
+
+		// load test: спрятать структуры в радиусе, затем вернуть (reload базы)
+		float load_test_radius = 30000.f;
+		double load_test_hide_seconds = 8.0;
+		double load_test_measure_seconds = 20.0;
+		int load_test_max_structures = 20000;
 	};
 
 	Config g_cfg;
@@ -209,7 +216,12 @@ namespace
 
   "StructureReplicationIntervalMultiplier": 0.0,
   "StructureNetUpdateFrequency": 0.0,
-  "StructureApplyIntervalSeconds": 60.0
+  "StructureApplyIntervalSeconds": 60.0,
+
+  "LoadTestRadius": 30000.0,
+  "LoadTestHideSeconds": 8.0,
+  "LoadTestMeasureSeconds": 20.0,
+  "LoadTestMaxStructures": 20000
 }
 )";
 	}
@@ -251,6 +263,11 @@ namespace
 			"StructureNetUpdateFrequency", g_cfg.structure_net_update_frequency);
 		g_cfg.structure_apply_interval_seconds = j.value(
 			"StructureApplyIntervalSeconds", g_cfg.structure_apply_interval_seconds);
+
+		g_cfg.load_test_radius = j.value("LoadTestRadius", g_cfg.load_test_radius);
+		g_cfg.load_test_hide_seconds = j.value("LoadTestHideSeconds", g_cfg.load_test_hide_seconds);
+		g_cfg.load_test_measure_seconds = j.value("LoadTestMeasureSeconds", g_cfg.load_test_measure_seconds);
+		g_cfg.load_test_max_structures = j.value("LoadTestMaxStructures", g_cfg.load_test_max_structures);
 	}
 
 	void LoadConfig()
@@ -403,6 +420,177 @@ namespace
 		return changed;
 	}
 
+	// ---------------------------------------------------------------- load test
+	//
+	// Воспроизводимая "перезагрузка базы" без действий игрока:
+	//   1) Hiding  - структурам в радиусе ставим NetCullDistanceSquared=1, они
+	//                становятся нерелевантными и сервер закрывает их каналы;
+	//   2) Measuring - возвращаем значения: структуры снова релевантны, сервер
+	//                создаёт каналы заново - и мы видим фактический темп
+	//                (DormancyRate + число открытых каналов раз в секунду).
+
+	int OpenChannelCount(UNetConnection* c)
+	{
+		if (auto* arr = SafeFieldPtr<TArray<UChannel*>>(c, "UNetConnection.OpenChannels"))
+			return arr->Num();
+		return -1;
+	}
+
+	struct SavedCull
+	{
+		AActor* actor;
+		float cull2;
+		float cull_dorm2;
+	};
+
+	enum class LoadPhase { Idle, Hiding, Measuring };
+
+	struct LoadTest
+	{
+		LoadPhase phase = LoadPhase::Idle;
+		double until_ms = 0.0;
+		double last_log_ms = 0.0;
+		std::vector<SavedCull> saved;
+	};
+
+	LoadTest g_load;
+
+	void LoadTestRestore()
+	{
+		int restored = 0;
+		for (auto& s : g_load.saved)
+		{
+			if (!IsValid(s.actor))
+				continue;
+			int ok = 0;
+			if (float* p = SafeFieldPtr<float>(s.actor, "AActor.NetCullDistanceSquared"))
+			{
+				*p = s.cull2;
+				++ok;
+			}
+			if (float* p = SafeFieldPtr<float>(s.actor, "AActor.NetCullDistanceSquaredDormant"))
+			{
+				*p = s.cull_dorm2;
+				++ok;
+			}
+			if (ok)
+				++restored;
+		}
+		LogI("loadtest restored=" + std::to_string(restored) + "/" + std::to_string(g_load.saved.size()));
+		g_load.saved.clear();
+	}
+
+	void StartLoadTest()
+	{
+		if (g_load.phase != LoadPhase::Idle)
+		{
+			LoadTestRestore();
+			g_load.phase = LoadPhase::Idle;
+		}
+
+		auto controllers = GetPlayerControllers();
+		if (controllers.Num() == 0)
+		{
+			LogW("loadtest: no players");
+			return;
+		}
+		auto* character = GetPlayerCharacterFromController(controllers[0].Get());
+		if (!character)
+		{
+			LogW("loadtest: no character");
+			return;
+		}
+
+		const FVector center = GetActorLocation(character);
+		const float radius2 = g_cfg.load_test_radius * g_cfg.load_test_radius;
+
+		int hidden = 0;
+		for (auto* a : GetAllStructures())
+		{
+			if (!IsValid(a))
+				continue;
+			if (hidden >= g_cfg.load_test_max_structures)
+				break;
+			if (FVector::DistSquared(GetActorLocation(a), center) > radius2)
+				continue;
+
+			float* cull = SafeFieldPtr<float>(a, "AActor.NetCullDistanceSquared");
+			float* cull_dorm = SafeFieldPtr<float>(a, "AActor.NetCullDistanceSquaredDormant");
+			if (!cull || *cull <= 1.f)
+				continue;                        // уже спрятан / нет поля
+
+			g_load.saved.push_back(SavedCull{ a, *cull, cull_dorm ? *cull_dorm : 0.f });
+			*cull = 1.f;                         // нерелевантен
+			if (cull_dorm)
+				*cull_dorm = 1.f;
+			++hidden;
+		}
+
+		const double now = static_cast<double>(GetTickCount64());
+		g_load.phase = LoadPhase::Hiding;
+		g_load.until_ms = now + g_cfg.load_test_hide_seconds * 1000.0;
+		g_load.last_log_ms = 0.0;
+
+		int open_channels = -1;
+		if (auto* driver = ArkApi::GetApiUtils().GetWorld() ? ArkApi::GetApiUtils().GetWorld()->NetDriverField() : nullptr)
+		{
+			for (auto* c : driver->ClientConnectionsField())
+				if (c)
+					open_channels = OpenChannelCount(c);
+		}
+
+		LogI("loadtest hide start: radius=" + std::to_string(g_cfg.load_test_radius) +
+			" hidden=" + std::to_string(hidden) +
+			" hideSeconds=" + std::to_string(g_cfg.load_test_hide_seconds) +
+			" openChannels=" + std::to_string(open_channels));
+	}
+
+	void LoadTestTick(double now_ms)
+	{
+		if (g_load.phase == LoadPhase::Idle)
+			return;
+
+		if (now_ms - g_load.last_log_ms >= 1000.0)
+		{
+			g_load.last_log_ms = now_ms;
+			UWorld* world = ArkApi::GetApiUtils().GetWorld();
+			auto* driver = world ? world->NetDriverField() : nullptr;
+			if (driver)
+			{
+				const char* phase = (g_load.phase == LoadPhase::Hiding) ? "hide" : "measure";
+				for (auto* c : driver->ClientConnectionsField())
+				{
+					if (!c)
+						continue;
+					float dorm = 0.f;
+					unsigned int out_bps = 0;
+					ReadField(c, "UNetConnection.DormancyRate", dorm);
+					ReadField(c, "UNetConnection.OutBytes", out_bps);
+					LogI(std::string("loadtest[") + phase + "]: dorm=" + std::to_string(dorm) +
+						" openChannels=" + std::to_string(OpenChannelCount(c)) +
+						" outBps=" + std::to_string(out_bps));
+				}
+			}
+		}
+
+		if (now_ms < g_load.until_ms)
+			return;
+
+		if (g_load.phase == LoadPhase::Hiding)
+		{
+			LoadTestRestore();
+			g_load.phase = LoadPhase::Measuring;
+			g_load.until_ms = now_ms + g_cfg.load_test_measure_seconds * 1000.0;
+			g_load.last_log_ms = 0.0;
+			LogI("loadtest measure start (structures are relevant again)");
+		}
+		else
+		{
+			LogI("loadtest done");
+			g_load.phase = LoadPhase::Idle;
+		}
+	}
+
 	// ---------------------------------------------------------------- reporting
 
 	std::string GlobalInfo()
@@ -483,6 +671,7 @@ namespace
 				c->ClientGivenIPField().ToString() + "' netspeed=" + std::to_string(netspeed) +
 				" cfg_internet=" + std::to_string(internet) + " cfg_lan=" + std::to_string(lan) +
 				" queued=" + std::to_string(queued) + " maxpacket=" + std::to_string(maxpacket) +
+				" openChannels=" + std::to_string(OpenChannelCount(c)) +
 				" dorm=" + std::to_string(dorm) + " peakDorm=" + std::to_string(st.peak_dorm) +
 				" outBps=" + std::to_string(out_bytes) + " peakOutBps=" + std::to_string(st.peak_out_bps) +
 				" avglag=" + std::to_string(avg_lag) +
@@ -514,6 +703,8 @@ namespace
 			g_fps_window_ticks = 0;
 			g_fps_window_start_ms = now_ms;
 		}
+
+		LoadTestTick(now_ms);
 
 		static double since_reconcile = 0.0;
 		static double since_status = 0.0;
@@ -631,6 +822,8 @@ namespace
 		}
 		LogI("peaks reset");
 	}
+
+	void CmdLoadTest(RCONClientConnection*, RCONPacket*, UWorld*) { StartLoadTest(); }
 } // namespace
 
 extern "C" __declspec(dllexport) void Plugin_Init()
@@ -647,6 +840,7 @@ extern "C" __declspec(dllexport) void Plugin_Init()
 	cmds.AddRconCommand("NetTune.on", &CmdOn);
 	cmds.AddRconCommand("NetTune.off", &CmdOff);
 	cmds.AddRconCommand("NetTune.resetpeaks", &CmdResetPeaks);
+	cmds.AddRconCommand("NetTune.loadtest", &CmdLoadTest);
 
 	LogI("loaded: enabled=" + std::string(g_cfg.enabled ? "1" : "0") + " mode=" + g_cfg.mode);
 }
@@ -660,5 +854,6 @@ extern "C" __declspec(dllexport) void Plugin_Unload()
 	cmds.RemoveRconCommand("NetTune.on");
 	cmds.RemoveRconCommand("NetTune.off");
 	cmds.RemoveRconCommand("NetTune.resetpeaks");
+	cmds.RemoveRconCommand("NetTune.loadtest");
 	LogI("unloaded");
 }
