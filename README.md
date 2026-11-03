@@ -136,6 +136,11 @@ new_actors_per_sec ≈ (f*195 + 30) * GDormancyLimitMultiplier
 | 20 | 60000 | 3.0 | 0.030 | **0.025** |
 | 40 | 60000 | 1.0 | 0.178 | **0.180** |
 
+> Примечание: встроенный `NetTune.loadtest` (спрятать структуры и вернуть) в этом
+> билде не сработал — структуры релевантятся через родителя/спатиализацию, и
+> изменение `NetCullDistanceSquared` у ребёнка каналы не закрывает. Поэтому
+> эксперименты делались реальным out-and-back (команда из плагина убрана).
+
 Подтверждено замером:
 
 * `CurrentNetSpeed` 14000 → 60000: инкремент падает в ~7.5×, пиковая отдача
@@ -220,12 +225,7 @@ new_actors_per_sec ≈ (f*195 + 30) * GDormancyLimitMultiplier
 
   "StructureReplicationIntervalMultiplier": 0.0,
   "StructureNetUpdateFrequency": 0.0,
-  "StructureApplyIntervalSeconds": 60.0,
-
-  "LoadTestRadius": 30000.0,
-  "LoadTestHideSeconds": 8.0,
-  "LoadTestMeasureSeconds": 20.0,
-  "LoadTestMaxStructures": 20000
+  "StructureApplyIntervalSeconds": 60.0
 }
 ```
 
@@ -244,7 +244,6 @@ new_actors_per_sec ≈ (f*195 + 30) * GDormancyLimitMultiplier
 | `NetTune.reload` | перечитать конфиг |
 | `NetTune.on` / `NetTune.off` | включить/выключить применение |
 | `NetTune.resetpeaks` | сбросить пиковые значения (`peakOutBps`/`peakDorm`) |
-| `NetTune.loadtest` | воспроизводимая «перезагрузка базы» (спрятать структуры в радиусе и вернуть) |
 
 `status` печатает по соединению: `netspeed`, `queued`, `maxpacket`,
 `dorm`/`peakDorm`, `outBps`/`peakOutBps`, `avglag`, потери.
