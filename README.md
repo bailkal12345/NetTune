@@ -122,11 +122,38 @@ new_actors_per_sec ≈ (f*195 + 30) * GDormancyLimitMultiplier
 прямой рычаг; `CurrentNetSpeed` держать `>= 60000` (запас на медленные
 соединения), выше — смысла нет.
 
+### Проверка применения (live)
+
+* `observedFps` (наш собственный тик-колбэк) = **19.7–20.0** при `tickrate=20`
+  → `NetServerMaxTickRate` действительно задаёт FPS сервера.
+* С плагином, **выключенным на 100+ секунд**, значения не изменились
+  (`tickrate=20`, `netspeed=60000`, `maxclientrate=60000`) → движок в покое их
+  не перезаписывает, **цикл перезаписи не нужен**.
+* Reconcile пишет только при расхождении: после стабилизации в логе нет строк
+  `reconcile` вообще (записей нет).
+* Функционально: `AdaptiveMax=41000` → `netspeed=41000`;
+  `mode=static`, `CurrentNetSpeed=50000` → `netspeed=50000` +
+  `cfg_internet/cfg_lan=60000` (`connections=3`).
+
+### Почему нет цикла перезаписи
+
+Все целевые поля пишутся только по конкретным событиям:
+
+| Поле | Кто перезаписывает |
+|---|---|
+| `NetServerMaxTickRate` | никто (только конфиг при инициализации) |
+| `MaxClientRate` / `MaxInternetClientRate` | `UWorld::Listen` (загрузка карты) |
+| `CurrentNetSpeed` | сообщение клиента `NMT_Netspeed` (только при смене настройки), `APlayerController::SetPlayer` (possession), `ClientCapBandwidth` (только понижает) |
+| `GDormancyLimitMultiplier` / `GNoDormancyLimit` | только командная строка при старте |
+
+Поэтому плагин делает «reconcile»: раз в `reconcileIntervalSeconds` читает
+значения и пишет **только если разошлись**. В стабильном состоянии записей нет.
+
 ---
 
 ## Режимы
 
-* `static` — раз в `applyIntervalSeconds` выставлять фиксированные значения.
+* `static` — раз в `reconcileIntervalSeconds` выставлять фиксированные значения.
 * `adaptive` (по умолчанию) — на каждое соединение цель в
   `[AdaptiveMin, AdaptiveMax]`, старт с максимума; шаг вниз при потерях/лаге,
   шаг вверх при чистом канале. Выше `60000` смысла нет (см. п.2), поэтому
@@ -146,7 +173,7 @@ new_actors_per_sec ≈ (f*195 + 30) * GDormancyLimitMultiplier
 {
   "enabled": true,
   "mode": "adaptive",
-  "applyIntervalSeconds": 10.0,
+  "reconcileIntervalSeconds": 15.0,
   "statusIntervalSeconds": 30.0,
 
   "NetServerMaxTickRate": 20,
@@ -188,6 +215,7 @@ new_actors_per_sec ≈ (f*195 + 30) * GDormancyLimitMultiplier
 | `NetTune.status` | вывести текущее состояние (driver, соединения, пики) |
 | `NetTune.reload` | перечитать конфиг |
 | `NetTune.on` / `NetTune.off` | включить/выключить применение |
+| `NetTune.resetpeaks` | сбросить пиковые значения (`peakOutBps`/`peakDorm`) |
 
 `status` печатает по соединению: `netspeed`, `queued`, `maxpacket`,
 `dorm`/`peakDorm`, `outBps`/`peakOutBps`, `avglag`, потери.

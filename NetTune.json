@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "mode": "adaptive",
-  "applyIntervalSeconds": 10.0,
+  "reconcileIntervalSeconds": 15.0,
   "statusIntervalSeconds": 30.0,
 
   "NetServerMaxTickRate": 20,
