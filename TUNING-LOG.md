@@ -1,7 +1,9 @@
 # NetTune tuning log
 
 Live experiment notes from the Genesis production server (10 s status logging, 2026-11-03/04).
-Complaint scenario: players near a huge base (structures flicker / pop-in / "прогруз" stutters).
+Complaint scenario: players near a huge base (**40 000+ structures**) - structures flicker /
+pop-in / "прогруз" stutters. A full relevant-set load of this base at 675/s takes ~59 s of
+continuous streaming, which is why `peakDorm` never left the ceiling in any test on this map.
 
 ## Verified engine model (v361)
 
@@ -91,10 +93,15 @@ Measured coefficients:
   bursts 87–180 KB/s, serial-path stalls ≤ 0.75 s, `queued` never went positive, `lag`
   0.07–0.37, zero loss. `peakDorm = cap` throughout ⇒ demand still exceeds 675/s; the stop at
   mult 3 is set by the approach-burst risk of mult 4 (~2.6 s), not by demand.
-* Recommended operating point: **`CurrentNetSpeed 240000, DormancyLimitMultiplier 3`**
-  (675/s, 3.0 s per 2000 structures). Optional A/B: brief mult 4 trial with players as judges;
-  revert on the first flicker complaint.
-* Criteria per step: `queued` does not accumulate (≤ ~300 KB), `lag` ≤ ~1 s, no complaints.
+* The base under test has **40 000+ structures**: a full relevant load at 675/s is ~59 s of
+  streaming, so the approach/join experience ("прогруз") is pace-bound, not noise.
+* Ladder extension for this base: raising `Rate` shifts the whole ladder up. At `480000`:
+  mult 3 approach ~1.0 s, mult 4 ~1.3 s (clean), mult 5 ~1.65 s (borderline); full 40k load
+  44 s at mult 4, 36 s at mult 5. Marker that `Rate = 480000` took effect: `queued` floor
+  `-48000` at fps 20.
+* A `240000 + 4` trial window (18:10–18:12) measured walking bursts 108–213 KB/s → stalls
+  ≤ 0.9 s (in threshold), lag up to 0.69, but fps 15.0–16.3 sustained with 2 conns
+  (attribution host-vs-production unresolved); verdict pending player feedback.
 * Wipe: netspeed is the shock absorber; if `observedFps` drops at 30 players, step the
   multiplier down, not netspeed.
 * Candidate plugin feature (trigger validated by data): per-connection adaptive — when a
