@@ -39,6 +39,7 @@ Complaint scenario: players near a huge base (structures flicker / pop-in / "п�
 | 60000 + 1 | 225 | 30–56 KB/s walking; 453–468 KB/s joins | < 1 s | "не лагает, бывает прогруз" |
 | 120000 + 1 | 225 | 62–267 KB/s tolerated | ≤ 2.2 s once | no queues at all |
 | 240000 + 2 | 450 | 80–157 KB/s walking (predicted 0.4 s) | 0.3–0.65 s | clean metrics, `peakDorm` pinned at cap |
+| 240000 + 3 | 675 | 86–162 KB/s walking (predicted ~148) | 0.36–0.68 s | clean: lag 0.07–0.20, no queues, zero loss; fps dips to 17.8–18.6 = host load |
 
 Measured coefficients:
 
@@ -64,9 +65,12 @@ Measured coefficients:
 
 ## Current state & next steps (2026-11-04)
 
-* `240000 + 2` is clean by every metric; `peakDorm = cap` ⇒ demand still exceeds 450/s.
-* Next step: **240000 + 3** (675/s, 3.0 s per 2000 structures) — expected walk stall ~0.6 s,
-  approach ~2.0 s (borderline). Stop-line: mult 4 (approach ~2.6 s).
+* `240000 + 3` is clean by every metric (lag 0.07–0.20, no queues, zero loss, walk stall
+  0.36–0.68 s); `peakDorm = cap` ⇒ demand still exceeds 675/s, but the stop-line is next:
+  mult 4 predicts approach bursts ~2.6 s of stall (over the 1–1.5 s complaint threshold).
+* Recommended operating point: **`CurrentNetSpeed 240000, DormancyLimitMultiplier 3`**
+  (675/s, 3.0 s per 2000 structures). Optional A/B: brief mult 4 trial with players as judges;
+  revert on the first flicker complaint.
 * Criteria per step: `queued` does not accumulate (≤ ~300 KB), `lag` ≤ ~1 s, no complaints.
 * Wipe: netspeed is the shock absorber; if `observedFps` drops at 30 players, step the
   multiplier down, not netspeed.
