@@ -40,6 +40,7 @@ Complaint scenario: players near a huge base (structures flicker / pop-in / "п�
 | 120000 + 1 | 225 | 62–267 KB/s tolerated | ≤ 2.2 s once | no queues at all |
 | 240000 + 2 | 450 | 80–157 KB/s walking (predicted 0.4 s) | 0.3–0.65 s | clean metrics, `peakDorm` pinned at cap |
 | 240000 + 3 | 675 | 86–162 KB/s walking (predicted ~148); solo-walker session 18:01–18:05: bursts 87–180 KB/s | 0.36–0.75 s | clean over 8+ min: lag 0.07–0.37, no queues ever, zero loss; fps dips to 17.8–18.6 = host load |
+| 240000 + 4 | 900 | 108–213 KB/s bursts (two clients at the base simultaneously); sustained outBps 30–107 KB/s | ≤ 0.9 s per burst (model) | metrics borderline: lag up to 0.69 (vs ≤ 0.37 at mult 3), `peakDorm` pinned at cap 0.02222, fps 15.0–16.3 sustained with only 2 conns; verdict pending player feedback; fps attribution (host vs production cost) unresolved |
 
 Measured coefficients:
 
