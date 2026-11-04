@@ -1,10 +1,9 @@
 {
-  "Debug": true,
-  "BandwidthBudgetMbps": 15.0,
-  "StatusIntervalSeconds": 300.0,
-
+  "Debug": false,
   "NetServerMaxTickRate": 20,
-  "CurrentNetSpeed": 60000,
-  "DormancyLimitMultiplier": 5.0,
-  "ReconcileIntervalSeconds": 5.0
+  "CurrentNetSpeed": 240000,
+  "DormancyLimitMultiplier": 3.0,
+  "ReconcileIntervalSeconds": 5.0,
+  "StatusIntervalSeconds": 300.0,
+  "BandwidthBudgetMbps": 15.4
 }

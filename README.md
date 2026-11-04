@@ -9,7 +9,7 @@ Three values are reconciled (written only when they differ, so a steady state wr
 
 | Value | Where | Effect |
 | --- | --- | --- |
-| `UPlayer.CurrentNetSpeed` | each `UNetConnection` | budget for **new** actors, see below |
+| `UPlayer.CurrentNetSpeed` | each `UNetConnection` | new-actor budget (saturates at `60000`) **and** the send-accounting drain rate, see below |
 | `UNetDriver.NetServerMaxTickRate` | net driver | server frame rate (clamped to `[10, 120]` by the engine) |
 | `GDormancyLimitMultiplier` | global | divides the new-actor increment (linear lever) |
 
@@ -23,11 +23,31 @@ f = clamp((CurrentNetSpeed - 14000) / 46000, 0, 1)
 
 `DormancyRate` decays by `1.0` per tick, so new actors per second is about
 `(f*195 + 30) * GDormancyLimitMultiplier`: ~30/s at `14000`, ~225/s at `60000`. `f` saturates at
-`60000`, so **values above 60000 do nothing**. The client sends this value itself (`NMT_Netspeed`),
-so a "Low" client gets `14000` and loads bases ~7.5x slower - which is what the plugin overrides.
+`60000`, so production does not grow beyond it - but `CurrentNetSpeed` has a second role with no
+saturation (see the budget below). The client sends this value itself (`NMT_Netspeed`), so a "Low"
+client gets `14000` and loads bases ~7.5x slower - which is what the plugin overrides.
 
 `NetServerMaxTickRate` does **not** change the new-actor rate (it cancels out of the formula); it
-trades CPU for granularity. `GDormancyLimitMultiplier` is the only lever beyond `60000`.
+trades CPU for granularity. `GDormancyLimitMultiplier` scales the rate linearly at any netspeed.
+
+### The send-accounting budget (`IsNetReady`)
+
+`FlushNet` adds every sent packet to the connection's `QueuedBytes`;
+`UNetConnection::Tick` drains it at `Rate = CurrentNetSpeed` bytes per second, floored at
+`-2*Rate*DeltaSeconds`. When `SendBuffer.Bytes + QueuedBytes >= 1`, `UChannel::IsNetReady` fails
+(`ServerReplicateActors` calls it per actor; on failure the actor gets `ForceNetUpdate` and is
+skipped for that tick). So after a send burst of B bytes the serial replication path is stalled
+for about `B / CurrentNetSpeed` seconds - that stall is the structure flicker / stutter players
+see near mega-bases. The parallel replication path (where the dormancy gate above lives) is not
+IsNetReady-gated, so bursts themselves are not limited by `Rate`.
+
+Two consequences:
+
+* The complaint "lag near a big base" is driven by the burst size (set by the dormancy pace)
+  **and** by the drain rate (set by `CurrentNetSpeed`). Lowering `CurrentNetSpeed` below 60000
+  makes stalls *longer*, not shorter.
+* Above `60000` the production is capped, but the drain keeps growing - `240000` halves the
+  post-burst stall window compared to `60000`. This is why the recommended config uses it.
 
 Measured live (out-and-back base reloads, predicted vs observed `peakDorm`):
 
@@ -50,7 +70,7 @@ and runs on the defaults - it does not create the file):
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `NetServerMaxTickRate` | `20` | server frame rate; `0` = leave unchanged |
-| `CurrentNetSpeed` | `60000` | per-client new-actor budget (`14000..60000`); `0` = leave unchanged |
+| `CurrentNetSpeed` | `60000` | per-connection value written by the plugin; drives both the new-actor budget (saturates at `60000`) and the `QueuedBytes` drain rate; `0` = leave unchanged |
 | `DormancyLimitMultiplier` | `0.0` | `GDormancyLimitMultiplier`; `0.0` = leave unchanged (ARK default `1.0`) |
 | `ReconcileIntervalSeconds` | `15.0` | how often the values are re-checked for drift |
 | `StatusIntervalSeconds` | `60.0` | periodic status line; `0` = off |
@@ -85,6 +105,10 @@ always `(f*195 + 30) * multiplier` actors per second.
 `budgetUtilPct` compares it against `BandwidthBudgetMbps` and is only printed when the budget is
 configured.
 
+The `queued` floor is `-2 * CurrentNetSpeed * DeltaSeconds`, so it doubles as a free fps gauge:
+`fps ≈ 2 * CurrentNetSpeed / |queued|` (e.g. `-7440` at `60000` -> 16.1 fps). A floor deeper than
+`-2 * CurrentNetSpeed / 20` marks a slow-frame moment.
+
 ## RCON
 
 | Command | Effect |
@@ -94,36 +118,37 @@ configured.
 
 ## Recommended config (13 maps, 200 Mbit/s, up to 100 players)
 
-Matches the shipped `Configs/config.json`:
-
 ```json
 {
-  "Debug": true,
-  "BandwidthBudgetMbps": 15.0,
-  "StatusIntervalSeconds": 300.0,
-
+  "Debug": false,
   "NetServerMaxTickRate": 20,
-  "CurrentNetSpeed": 60000,
-  "DormancyLimitMultiplier": 5.0,
-  "ReconcileIntervalSeconds": 5.0
+  "CurrentNetSpeed": 240000,
+  "DormancyLimitMultiplier": 3.0,
+  "ReconcileIntervalSeconds": 5.0,
+  "StatusIntervalSeconds": 300.0,
+  "BandwidthBudgetMbps": 15.4
 }
 ```
 
-* `DormancyLimitMultiplier = 5.0` -> ~1125 new actors/s per client; a 2000-structure base loads in
-  ~1.8 s. The ceiling was reached at multipliers 1, 2, 3, 4 and 5, so the lever is still live -
-  but with 30 players on the host the frame rate already dipped to ~16 of the target 20, so `5.0`
-  is the operating point for this player count. Stop raising when `peakDorm` stays `0` or well
-  below the ceiling - the remaining limit is then the client (rendering / streaming).
-* `ReconcileIntervalSeconds = 5.0` -> a freshly joined client sits at the server default `14000`
-  until the next reconcile; this shortens the slow start of every session (worst at a wipe).
-* `NetServerMaxTickRate = 20` held `observedFps ~20` with 26 players on the host; `15` is the
+* `CurrentNetSpeed = 240000` -> the production part (`f`) saturates at `60000`, but the
+  `QueuedBytes` drain runs at 240 KB/s, so a walking-near-base burst (80–180 KB/s observed)
+  stalls the serial replication path for ≤ 0.75 s instead of seconds. This is what removed the
+  structure flicker / stutter near mega-bases. Verified live: the `queued` floor tracked
+  `-2*Rate*DeltaSeconds` at 40000/60000/120000/240000.
+* `DormancyLimitMultiplier = 3.0` -> ~675 new actors/s per client at `f = 1`; a 2000-structure
+  base loads in ~3.0 s. `peakDorm` pinned at the ceiling during every test means demand still
+  exceeds it, but mult 4 predicts ~2.6 s approach-burst stalls - over the ~1.5 s complaint
+  threshold measured at `60000 + 2`. The full tested ladder with per-step verdicts is in
+  `TUNING-LOG.md`.
+* `ReconcileIntervalSeconds = 5.0` -> a freshly joined client sits at the client-requested
+  netspeed until the next reconcile; drop to `2.0` if join bursts are noticed.
+* `NetServerMaxTickRate = 20` held `observedFps ~20` with 26+ players on the host; `15` is the
   CPU-conservative alternative. It does not affect base loading.
-* `BandwidthBudgetMbps = 15.0` is the equal share of the shared 200 Mbit/s link (200 / 13) used for
-  `budgetUtilPct`; it is a gauge, not a limiter. The summed per-map peak was 5.3 / 8.0 / 14.9
-  Mbit/s of 200 at multipliers 1 / 3 / 5 - the link is not the limit.
-  `CurrentNetSpeed = 40000` is the fallback if it ever is.
-* `Debug: true` keeps the per-connection detail in the periodic line; set it to `false` once
-  observation is not needed.
+* `BandwidthBudgetMbps = 15.4` is the equal share of the shared 200 Mbit/s link (200 / 13) used
+  for `budgetUtilPct`; it is a gauge, not a limiter. The summed per-map peak peaked at 35 Mbit/s
+  of 200 - the link is not the limit.
+* On a wipe, if `observedFps` drops at 20–30 players, step the multiplier down - netspeed is the
+  shock absorber, keep it high.
 
 ## Build
 
