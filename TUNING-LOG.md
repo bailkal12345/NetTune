@@ -63,6 +63,27 @@ Measured coefficients:
 * Fresh joins live at the client-requested netspeed until the next reconcile
   (`ReconcileIntervalSeconds`); at 60000 default that is a 174 KB/s burst + lag 1.08 spike.
 
+## NPCNetworkStasisRangeScale (verified in v361 binary)
+
+`AActor::GetNetStasisAndRangeMultiplier` (dump 7115854, VA 0x142476df0; dino override 0x1406ebe60):
+
+* Scaling applies **only to wild NPCs**: skipped when `PlayerCountEnd == 0`, actor is not an NPC,
+  `TargetingTeam > 50000` (player/tribe-owned), `bUseNetworkSpatialization == 0`,
+  `OverrideStasisComponentRadius > 0`; Genesis mission dinos (`bIsTemporaryMissionDino`) excluded too.
+* `mult = (PercentEnd * t + (1 - t)) * base`, `t = clamp((players - Start) / (End - Start), 0, 1)`,
+  cached per frame; player count from world state. Returned 1.0 is reported as 0.0 and callers
+  treat `<= 0` as 1.0.
+* Consumers (vftable slot 311 / offset 0x9b8, 27 call sites): `AActor::IsNetRelevant` spatial branch
+  (dump ~7121420) culls NPCs beyond `NetCullDistance * mult`; the stasis manager wake check
+  (dump ~7500828/7505399, `PendingUnStasisList`) wakes stasised dinos only within
+  `mult^2 * 24000^2 * scale` (radius × mult, area × mult²).
+* Read from `GameUserSettings.ini` `[ServerSettings]` (dump 7842022); unset values keep the
+  globals at 0 and `End == 0` disables scaling entirely.
+* Prod values 5 / 40 / 0.5: factor 1.0 at ≤5 players (inactive at current 3–4), 0.79 @20,
+  0.64 @30, 0.50 @≥40. Complementary to NetTune: stall = burst/Rate — NetTune raises the drain,
+  this shrinks the burst (fewer wild dinos waking/culling per player) and stasis CPU load.
+  Visual trade-off: wild dinos appear closer as pop grows (half distance at 40 players).
+
 ## Current state & next steps (2026-11-04)
 
 * `240000 + 3` confirmed over a dedicated 8-minute solo walk around the base (18:01–18:05):
