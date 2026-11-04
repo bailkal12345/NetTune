@@ -46,8 +46,9 @@ Two consequences:
 * The complaint "lag near a big base" is driven by the burst size (set by the dormancy pace)
   **and** by the drain rate (set by `CurrentNetSpeed`). Lowering `CurrentNetSpeed` below 60000
   makes stalls *longer*, not shorter.
-* Above `60000` the production is capped, but the drain keeps growing - `240000` halves the
-  post-burst stall window compared to `60000`. This is why the recommended config uses it.
+* Above `60000` the production is capped, but the drain keeps growing - `480000` cuts the
+  post-burst stall window 8x compared to `60000` (and 2x compared to `240000`). This is why the
+  recommended config uses it.
 
 Measured live (out-and-back base reloads, predicted vs observed `peakDorm`):
 
@@ -122,7 +123,7 @@ The `queued` floor is `-2 * CurrentNetSpeed * DeltaSeconds`, so it doubles as a 
 {
   "Debug": false,
   "NetServerMaxTickRate": 20,
-  "CurrentNetSpeed": 240000,
+  "CurrentNetSpeed": 480000,
   "DormancyLimitMultiplier": 3.0,
   "ReconcileIntervalSeconds": 5.0,
   "StatusIntervalSeconds": 300.0,
@@ -130,15 +131,18 @@ The `queued` floor is `-2 * CurrentNetSpeed * DeltaSeconds`, so it doubles as a 
 }
 ```
 
-* `CurrentNetSpeed = 240000` -> the production part (`f`) saturates at `60000`, but the
-  `QueuedBytes` drain runs at 240 KB/s, so a walking-near-base burst (80–180 KB/s observed)
-  stalls the serial replication path for ≤ 0.75 s instead of seconds. This is what removed the
-  structure flicker / stutter near mega-bases. Verified live: the `queued` floor tracked
-  `-2*Rate*DeltaSeconds` at 40000/60000/120000/240000.
+* `CurrentNetSpeed = 480000` -> the production part (`f`) saturates at `60000`, but the
+  `QueuedBytes` drain runs at 480 KB/s, so a walking-near-base burst (76–180 KB/s observed)
+  stalls the serial replication path for ≤ 0.38 s instead of seconds. Verified live: the
+  `queued` floor tracked `-2*Rate*DeltaSeconds` at 40000/60000/120000/240000/480000, and an A/B
+  (240000 vs 480000, same players) showed fps is unaffected - the drain rate has no observed
+  CPU price.
 * `DormancyLimitMultiplier = 3.0` -> ~675 new actors/s per client at `f = 1`; a 2000-structure
-  base loads in ~3.0 s. `peakDorm` pinned at the ceiling during every test means demand still
-  exceeds it, but mult 4 predicts ~2.6 s approach-burst stalls - over the ~1.5 s complaint
-  threshold measured at `60000 + 2`. The full tested ladder with per-step verdicts is in
+  base loads in ~3.0 s, a 40k mega-base streams for ~59 s (its demand never drops below the
+  pace). **Mult 4 was player-rejected**: bigger bursts froze the client during loading even
+  though the server-side stall windows stayed ≤ 0.45 s - the client-side processing of each
+  burst is the binding constraint, and the `lag` tail per burst (0.4–0.84 s at 4 vs ≤ 0.42 at 3)
+  was the leading indicator. The full tested ladder with per-step verdicts is in
   `TUNING-LOG.md`.
 * `ReconcileIntervalSeconds = 5.0` -> a freshly joined client sits at the client-requested
   netspeed until the next reconcile; drop to `2.0` if join bursts are noticed.
@@ -148,7 +152,10 @@ The `queued` floor is `-2 * CurrentNetSpeed * DeltaSeconds`, so it doubles as a 
   for `budgetUtilPct`; it is a gauge, not a limiter. The summed per-map peak peaked at 35 Mbit/s
   of 200 - the link is not the limit.
 * On a wipe, if `observedFps` drops at 20–30 players, step the multiplier down - netspeed is the
-  shock absorber, keep it high.
+  shock absorber, keep it high. For the wave itself: `ReconcileIntervalSeconds 2.0`,
+  `Debug true` and `StatusIntervalSeconds 30` until it settles; at 25 simultaneous loaders
+  mult 3 draws ~94 Mbit/s of the shared 200 - start the wave at mult 2 if the link or host fps
+  gets tight (the full wipe playbook is in `TUNING-LOG.md`).
 
 ## Build
 

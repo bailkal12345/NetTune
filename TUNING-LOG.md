@@ -44,7 +44,8 @@ continuous streaming, which is why `peakDorm` never left the ceiling in any test
 | 240000 + 3 | 675 | 86–162 KB/s walking (predicted ~148); solo-walker session 18:01–18:05: bursts 87–180 KB/s | 0.36–0.75 s | clean over 8+ min: lag 0.07–0.37, no queues ever, zero loss; fps dips to 17.8–18.6 = host load |
 | 240000 + 4 | 900 | 108–213 KB/s bursts (two clients at the base simultaneously); sustained outBps 30–107 KB/s | ≤ 0.9 s per burst (model) | metrics borderline: lag up to 0.69 (vs ≤ 0.37 at mult 3), `peakDorm` pinned at cap 0.02222, fps 15.0–16.3 sustained with only 2 conns; verdict pending player feedback; fps attribution (host vs production cost) unresolved |
 | 480000 + 3 | 675 | 86–179 KB/s (same as 240000+3); sustained outBps up to 125 KB/s | ≤ 0.37 s (burst/Rate) | per-connection metrics clean: lag 0.09–0.42, no queues, zero loss; floor tracked -2*480000/fps (61–65 K) ✓; **but fps 15.7–17.7 persistent with 3 conns** — same evening phase as the 240000+4 window; needs the netspeed A/B to attribute (host load vs serial-path CPU) |
-| 480000 + 4 | 900 | solo walk 18:33–18:42 (~10 min): bursts 109–216 KB/s, sustained outBps 21–106 KB/s | ≤ 0.45 s (216/480) | passes: no queues ever, zero loss, `peakDorm` tracks `inc` at actual fps (demand ≥ pace); **lag tail 0.4–0.84 s recurs at every bigger burst** (vs ≤ 0.42 at mult 3) - the marginal cost of mult 4; player feedback is the judge |
+| 480000 + 4 | 900 | solo walk 18:33–18:42 (~10 min): bursts 109–216 KB/s, sustained outBps 21–106 KB/s | ≤ 0.45 s (216/480) | **player-rejected**: freezes during base loading ("клиент не успевает"); the lag tail 0.4–0.84 s per burst was the leading indicator - client-side processing is the binding constraint on burst size |
+| 480000 + 3 (final) | 675 | post-revert window 18:45–18:47: bursts 76–180 KB/s | ≤ 0.38 s (180/480) | clean: lag 0.08–0.30 typical; one 2.09 spike and one 0.75 immediately after burst sequences (client processing debt draining); `peakDorm` at `inc` (0.0221–0.0257 ≈ `fps/((f*195+30)*3)`) - demand still ≥ 675/s |
 
 Measured coefficients:
 
@@ -94,29 +95,16 @@ Measured coefficients:
 
 ## Current state & next steps (2026-11-04)
 
-* `240000 + 3` confirmed over a dedicated 8-minute solo walk around the base (18:01–18:05):
-  bursts 87–180 KB/s, serial-path stalls ≤ 0.75 s, `queued` never went positive, `lag`
-  0.07–0.37, zero loss. `peakDorm = cap` throughout ⇒ demand still exceeds 675/s; the stop at
-  mult 3 is set by the approach-burst risk of mult 4 (~2.6 s), not by demand.
-* The base under test has **40 000+ structures**: a full relevant load at 675/s is ~59 s of
-  streaming, so the approach/join experience ("прогруз") is pace-bound, not noise.
-* Ladder extension for this base: raising `Rate` shifts the whole ladder up. At `480000`:
-  mult 3 approach ~1.0 s, mult 4 ~1.3 s (clean), mult 5 ~1.65 s (borderline); full 40k load
-  44 s at mult 4, 36 s at mult 5. Marker that `Rate = 480000` took effect: `queued` floor
-  `-48000` at fps 20.
-* A `240000 + 4` trial window (18:10–18:12) measured walking bursts 108–213 KB/s → stalls
-  ≤ 0.9 s (in threshold), lag up to 0.69, but fps 15.0–16.3 sustained with 2 conns
-  (attribution host-vs-production unresolved); verdict pending player feedback.
-* A `480000 + 3` window (18:20–18:21) confirmed the drain-rate marker (floor tracked
-  `-2*480000/fps`) and clean per-connection metrics, but fps sat at 15.7–17.7 with 3 conns.
-  **A/B resolved (18:24–18:27, back at 240000+3, same players): fps stayed 15.7–17.1** — the
-  netspeed change does not move fps, so the dip is the host's evening phase (other maps), not
-  the drain rate. `480000` has no observed CPU price and stays: strictly better stall windows
-  (≤ 0.37 s vs ≤ 0.77 s at the same bursts).
-* With the fps attribution resolved, the `240000 + 4` window re-reads as passing: stalls
-  ≤ 0.9 s, lag ≤ 0.69, no queues, no loss. At `480000` the predicted approach-burst window for
-  mult 4 is ~1.3 s (in threshold), so **`480000 + 4` is the predicted-clean fast point**
-  (900/s, ~2.2 s per 2000 structures) - player feedback is the remaining judge.
+* **FINAL: `CurrentNetSpeed 480000, DormancyLimitMultiplier 3`** (675/s, ~3.0 s per 2000
+  structures, ~59 s of streaming for the 40k mega-base). Player-tested: mult 4 froze the client
+  during loading bursts; mult 3 is smooth. Metrics at 3: walk bursts 76–180 KB/s, serial stalls
+  ≤ 0.38 s, lag mostly ≤ 0.3 with rare post-burst spikes (≤ 2.09, decaying).
+* The lag tail per burst (0.4–0.84 s at mult 4 vs ≤ 0.42 at mult 3) turned out to be the leading
+  indicator of client-side overload - watch it before players complain.
+* Wipe-day overlay: `ReconcileIntervalSeconds 2.0`, `Debug true`, `StatusIntervalSeconds 30`,
+  start the wave at mult 2 if 25+ players load simultaneously (link math: 25 approach bursts at
+  mult 3 ≈ 94 Mbit/s of the shared 200; at mult 5 ≈ 158 - over the safe share). Return to
+  `Debug false` / 300 s after the wave; keep netspeed high - it is the shock absorber.
 * Wipe: netspeed is the shock absorber; if `observedFps` drops at 30 players, step the
   multiplier down, not netspeed.
 * Candidate plugin feature (trigger validated by data): per-connection adaptive — when a

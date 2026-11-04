@@ -1,7 +1,7 @@
 {
   "Debug": false,
   "NetServerMaxTickRate": 20,
-  "CurrentNetSpeed": 240000,
+  "CurrentNetSpeed": 480000,
   "DormancyLimitMultiplier": 3.0,
   "ReconcileIntervalSeconds": 5.0,
   "StatusIntervalSeconds": 300.0,
