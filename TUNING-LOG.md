@@ -43,6 +43,7 @@ continuous streaming, which is why `peakDorm` never left the ceiling in any test
 | 240000 + 2 | 450 | 80–157 KB/s walking (predicted 0.4 s) | 0.3–0.65 s | clean metrics, `peakDorm` pinned at cap |
 | 240000 + 3 | 675 | 86–162 KB/s walking (predicted ~148); solo-walker session 18:01–18:05: bursts 87–180 KB/s | 0.36–0.75 s | clean over 8+ min: lag 0.07–0.37, no queues ever, zero loss; fps dips to 17.8–18.6 = host load |
 | 240000 + 4 | 900 | 108–213 KB/s bursts (two clients at the base simultaneously); sustained outBps 30–107 KB/s | ≤ 0.9 s per burst (model) | metrics borderline: lag up to 0.69 (vs ≤ 0.37 at mult 3), `peakDorm` pinned at cap 0.02222, fps 15.0–16.3 sustained with only 2 conns; verdict pending player feedback; fps attribution (host vs production cost) unresolved |
+| 480000 + 3 | 675 | 86–179 KB/s (same as 240000+3); sustained outBps up to 125 KB/s | ≤ 0.37 s (burst/Rate) | per-connection metrics clean: lag 0.09–0.42, no queues, zero loss; floor tracked -2*480000/fps (61–65 K) ✓; **but fps 15.7–17.7 persistent with 3 conns** — same evening phase as the 240000+4 window; needs the netspeed A/B to attribute (host load vs serial-path CPU) |
 
 Measured coefficients:
 
@@ -102,6 +103,12 @@ Measured coefficients:
 * A `240000 + 4` trial window (18:10–18:12) measured walking bursts 108–213 KB/s → stalls
   ≤ 0.9 s (in threshold), lag up to 0.69, but fps 15.0–16.3 sustained with 2 conns
   (attribution host-vs-production unresolved); verdict pending player feedback.
+* A `480000 + 3` window (18:20–18:21) confirmed the drain-rate marker (floor tracked
+  `-2*480000/fps`) and clean per-connection metrics, but fps sat at 15.7–17.7 with 3 conns.
+  Open question: does a larger `Rate` cost host CPU (the serial path stops stalling and pushes
+  more replication per tick)? Decisive A/B: `NetTune.Reload` back to 240000 with the same
+  players - if fps recovers within minutes, the drain rate has a CPU price; if it stays ~16,
+  it is the host's evening phase (check other maps' `observedFps` at the same minute).
 * Wipe: netspeed is the shock absorber; if `observedFps` drops at 30 players, step the
   multiplier down, not netspeed.
 * Candidate plugin feature (trigger validated by data): per-connection adaptive — when a
