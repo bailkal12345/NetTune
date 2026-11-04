@@ -105,10 +105,14 @@ Measured coefficients:
   (attribution host-vs-production unresolved); verdict pending player feedback.
 * A `480000 + 3` window (18:20–18:21) confirmed the drain-rate marker (floor tracked
   `-2*480000/fps`) and clean per-connection metrics, but fps sat at 15.7–17.7 with 3 conns.
-  Open question: does a larger `Rate` cost host CPU (the serial path stops stalling and pushes
-  more replication per tick)? Decisive A/B: `NetTune.Reload` back to 240000 with the same
-  players - if fps recovers within minutes, the drain rate has a CPU price; if it stays ~16,
-  it is the host's evening phase (check other maps' `observedFps` at the same minute).
+  **A/B resolved (18:24–18:27, back at 240000+3, same players): fps stayed 15.7–17.1** — the
+  netspeed change does not move fps, so the dip is the host's evening phase (other maps), not
+  the drain rate. `480000` has no observed CPU price and stays: strictly better stall windows
+  (≤ 0.37 s vs ≤ 0.77 s at the same bursts).
+* With the fps attribution resolved, the `240000 + 4` window re-reads as passing: stalls
+  ≤ 0.9 s, lag ≤ 0.69, no queues, no loss. At `480000` the predicted approach-burst window for
+  mult 4 is ~1.3 s (in threshold), so **`480000 + 4` is the predicted-clean fast point**
+  (900/s, ~2.2 s per 2000 structures) - player feedback is the remaining judge.
 * Wipe: netspeed is the shock absorber; if `observedFps` drops at 30 players, step the
   multiplier down, not netspeed.
 * Candidate plugin feature (trigger validated by data): per-connection adaptive — when a
