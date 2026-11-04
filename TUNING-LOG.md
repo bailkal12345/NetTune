@@ -44,7 +44,7 @@ continuous streaming, which is why `peakDorm` never left the ceiling in any test
 | 240000 + 3 | 675 | 86–162 KB/s walking (predicted ~148); solo-walker session 18:01–18:05: bursts 87–180 KB/s | 0.36–0.75 s | clean over 8+ min: lag 0.07–0.37, no queues ever, zero loss; fps dips to 17.8–18.6 = host load |
 | 240000 + 4 | 900 | 108–213 KB/s bursts (two clients at the base simultaneously); sustained outBps 30–107 KB/s | ≤ 0.9 s per burst (model) | metrics borderline: lag up to 0.69 (vs ≤ 0.37 at mult 3), `peakDorm` pinned at cap 0.02222, fps 15.0–16.3 sustained with only 2 conns; verdict pending player feedback; fps attribution (host vs production cost) unresolved |
 | 480000 + 3 | 675 | 86–179 KB/s (same as 240000+3); sustained outBps up to 125 KB/s | ≤ 0.37 s (burst/Rate) | per-connection metrics clean: lag 0.09–0.42, no queues, zero loss; floor tracked -2*480000/fps (61–65 K) ✓; **but fps 15.7–17.7 persistent with 3 conns** — same evening phase as the 240000+4 window; needs the netspeed A/B to attribute (host load vs serial-path CPU) |
-| 480000 + 4 | 900 | solo walk 18:33–18:36: bursts 109–208 KB/s, sustained outBps 21–101 KB/s | ≤ 0.43 s (208/480) | passes: lag 0.07–0.72 (tail heavier than mult 3 but < 1 s), no queues, zero loss; `peakDorm` 0.0171–0.0224 tracks `inc` at the *actual* fps (15.7 → 0.0174), so demand still ≥ pace; fps 15.3–16.4 = host phase (A/B-proven) |
+| 480000 + 4 | 900 | solo walk 18:33–18:42 (~10 min): bursts 109–216 KB/s, sustained outBps 21–106 KB/s | ≤ 0.45 s (216/480) | passes: no queues ever, zero loss, `peakDorm` tracks `inc` at actual fps (demand ≥ pace); **lag tail 0.4–0.84 s recurs at every bigger burst** (vs ≤ 0.42 at mult 3) - the marginal cost of mult 4; player feedback is the judge |
 
 Measured coefficients:
 
