@@ -39,7 +39,7 @@ Complaint scenario: players near a huge base (structures flicker / pop-in / "п�
 | 60000 + 1 | 225 | 30–56 KB/s walking; 453–468 KB/s joins | < 1 s | "не лагает, бывает прогруз" |
 | 120000 + 1 | 225 | 62–267 KB/s tolerated | ≤ 2.2 s once | no queues at all |
 | 240000 + 2 | 450 | 80–157 KB/s walking (predicted 0.4 s) | 0.3–0.65 s | clean metrics, `peakDorm` pinned at cap |
-| 240000 + 3 | 675 | 86–162 KB/s walking (predicted ~148) | 0.36–0.68 s | clean: lag 0.07–0.20, no queues, zero loss; fps dips to 17.8–18.6 = host load |
+| 240000 + 3 | 675 | 86–162 KB/s walking (predicted ~148); solo-walker session 18:01–18:05: bursts 87–180 KB/s | 0.36–0.75 s | clean over 8+ min: lag 0.07–0.37, no queues ever, zero loss; fps dips to 17.8–18.6 = host load |
 
 Measured coefficients:
 
@@ -65,9 +65,10 @@ Measured coefficients:
 
 ## Current state & next steps (2026-11-04)
 
-* `240000 + 3` is clean by every metric (lag 0.07–0.20, no queues, zero loss, walk stall
-  0.36–0.68 s); `peakDorm = cap` ⇒ demand still exceeds 675/s, but the stop-line is next:
-  mult 4 predicts approach bursts ~2.6 s of stall (over the 1–1.5 s complaint threshold).
+* `240000 + 3` confirmed over a dedicated 8-minute solo walk around the base (18:01–18:05):
+  bursts 87–180 KB/s, serial-path stalls ≤ 0.75 s, `queued` never went positive, `lag`
+  0.07–0.37, zero loss. `peakDorm = cap` throughout ⇒ demand still exceeds 675/s; the stop at
+  mult 3 is set by the approach-burst risk of mult 4 (~2.6 s), not by demand.
 * Recommended operating point: **`CurrentNetSpeed 240000, DormancyLimitMultiplier 3`**
   (675/s, 3.0 s per 2000 structures). Optional A/B: brief mult 4 trial with players as judges;
   revert on the first flicker complaint.
