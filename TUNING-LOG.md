@@ -93,6 +93,25 @@ Measured coefficients:
   this shrinks the burst (fewer wild dinos waking/culling per player) and stasis CPU load.
   Visual trade-off: wild dinos appear closer as pop grows (half distance at 40 players).
 
+## Full production day (2026-11-05, 06:57-17:15, 13 maps, final config)
+
+Config on prod: the tuned values (480000 + 3) with debug telemetry (`Debug true`,
+`StatusIntervalSeconds 10`). ~3650 statuses per map; per-connection samples 244-14000 per map.
+
+* Host fps with players: avg 16.7-20 per map, max 20.1 everywhere; brief single-window dips to
+  2.9-13 (host hiccups, likely saves/GC). Host per-minute egress peak **17.4 Mbit/s of 200
+  (8.7%)**, average 3.5 - the link is idle.
+* Per-connection: `queued` max 427 KB (drains < 1 s at 480 KB/s), bursts up to 709 KB/s,
+  `peakDorm` pinned at cap on loading clients, netspeed=480000 dominant (14000/60000 only in the
+  5 s fresh-join window before reconcile).
+* Real lag spikes >= 2 s: **17 windows all day across 13 maps**, clustered on repeat client IPs
+  (95.24.179.63, 109.201.59.151, 85.174.180.172, 176.210.129.119, 5.149.159.181) - client
+  connection quality, not server-side (no queues, no loss correlation).
+* Outgoing-loss windows (>= 5 packets): 58 all day, max 292/97/95/78 packets, clustered on the
+  same heavy-loader IPs - burst-induced client-side loss, not systemic.
+* All 13 base logs end at 17:15:18-27 simultaneously - scheduled restart; the logs after it are
+  not in this snapshot.
+
 ## Current state & next steps (2026-11-04)
 
 * **FINAL: `CurrentNetSpeed 480000, DormancyLimitMultiplier 3`** (675/s, ~3.0 s per 2000
