@@ -93,24 +93,27 @@ Measured coefficients:
   this shrinks the burst (fewer wild dinos waking/culling per player) and stasis CPU load.
   Visual trade-off: wild dinos appear closer as pop grows (half distance at 40 players).
 
-## Full production day (2026-11-05, 06:57-17:15, 13 maps, final config)
+## Full production day (2026-11-05 06:57 -> 2026-11-06 06:56, 24 h, 13 maps, final config)
 
 Config on prod: the tuned values (480000 + 3) with debug telemetry (`Debug true`,
-`StatusIntervalSeconds 10`). ~3650 statuses per map; per-connection samples 244-14000 per map.
+`StatusIntervalSeconds 10`); ~8500 statuses per map, 24k-25k per-connection samples on busy maps.
+Correction: the earlier "17:15 restart" note was wrong - the servers ran the full 24 h
+continuously; that timestamp was just the moment the first log snapshot was copied.
 
-* Host fps with players: avg 16.7-20 per map, max 20.1 everywhere; brief single-window dips to
-  2.9-13 (host hiccups, likely saves/GC). Host per-minute egress peak **17.4 Mbit/s of 200
-  (8.7%)**, average 3.5 - the link is idle.
-* Per-connection: `queued` max 427 KB (drains < 1 s at 480 KB/s), bursts up to 709 KB/s,
-  `peakDorm` pinned at cap on loading clients, netspeed=480000 dominant (14000/60000 only in the
-  5 s fresh-join window before reconcile).
-* Real lag spikes >= 2 s: **17 windows all day across 13 maps**, clustered on repeat client IPs
-  (95.24.179.63, 109.201.59.151, 85.174.180.172, 176.210.129.119, 5.149.159.181) - client
-  connection quality, not server-side (no queues, no loss correlation).
-* Outgoing-loss windows (>= 5 packets): 58 all day, max 292/97/95/78 packets, clustered on the
-  same heavy-loader IPs - burst-induced client-side loss, not systemic.
-* All 13 base logs end at 17:15:18-27 simultaneously - scheduled restart; the logs after it are
-  not in this snapshot.
+* Host fps with players: **avg 16.2-17.4 per map, max 20.0-20.1 everywhere**; single 10-s dips
+  to 2.5-8.7 (host hiccups, likely saves/GC). Host per-minute egress peak **17.4 Mbit/s of 200
+  (8.7%)**, average 3.5 - the link is idle even at evening prime (17:33).
+* Config held all day: `mult=3` on every map, `netspeed=480000` dominant; `14000`/`60000` appear
+  only inside the 5 s fresh-join window before reconcile.
+* Per-connection: `queued` max 427 KB (drains < 1 s at 480 KB/s), several maps never went
+  positive; bursts up to 1090 KB/s single-second (rare approach events, ~2.3 s stall window);
+  `peakDorm` pinned at cap on loading clients.
+* Real lag spikes >= 2 s: **26 windows in 24 h across 13 maps**, clustered on repeat client IPs
+  (95.24.179.63, 176.210.129.119, 85.174.180.172, 89.22.177.26, 109.201.59.151,
+  5.149.159.181) - client connection quality, not server-side (no queues, no loss correlation).
+* Outgoing-loss windows (>= 5 packets): 179 in 24 h, max 292/101/97/95/78 packets, on the same
+  heavy-loader IPs (37.99.37.39, 95.32.167.62, 109.201.59.151, 91.149.103.188,
+  85.174.180.172, 193.160.224.122) - burst-induced client-side loss, not systemic.
 
 ## Current state & next steps (2026-11-04)
 
