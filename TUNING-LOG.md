@@ -101,8 +101,10 @@ Correction: the earlier "17:15 restart" note was wrong - the servers ran the ful
 continuously; that timestamp was just the moment the first log snapshot was copied.
 
 * Host fps with players: **avg 16.2-17.4 per map, max 20.0-20.1 everywhere**; single 10-s dips
-  to 2.5-8.7 (host hiccups, likely saves/GC). Host per-minute egress peak **17.4 Mbit/s of 200
-  (8.7%)**, average 3.5 - the link is idle even at evening prime (17:33).
+  to 2.5-8.7 (host hiccups, likely saves/GC). Host per-minute egress peak **9.85 Mbit/s of 200
+  (4.9%)** (03:16), average 1.9 - the link is idle. Correction: the earlier note of "17.4
+  Mbit/s at 17:33" was an artifact of summing over the mixed snapshot folder (duplicate pid
+  generations); the recheck over the complete server-side logs gives 9.85 max for this day.
 * Config held all day: `mult=3` on every map, `netspeed=480000` dominant; `14000`/`60000` appear
   only inside the 5 s fresh-join window before reconcile.
 * Per-connection: `queued` max 427 KB (drains < 1 s at 480 KB/s), several maps never went
@@ -114,6 +116,28 @@ continuously; that timestamp was just the moment the first log snapshot was copi
 * Outgoing-loss windows (>= 5 packets): 179 in 24 h, max 292/101/97/95/78 packets, on the same
   heavy-loader IPs (37.99.37.39, 95.32.167.62, 109.201.59.151, 91.149.103.188,
   85.174.180.172, 193.160.224.122) - burst-induced client-side loss, not systemic.
+
+## Days after the final config (2026-11-06 and 2026-11-07, full-history export recheck)
+
+Source: a full export of the server-side log directory (2026-11-03 10:50 -> 2026-11-07 20:24,
+~294k NetTune lines, 109 files). Debug telemetry was returned off after the 24-h observation
+day: from the 06:56 restart on Nov 6 the statuses are summary-only at `StatusIntervalSeconds
+300` - so no per-connection detail (lag/loss/queued) exists for these days by design.
+
+* `mult=3` on every server on every day; no stale configs anywhere (the one suspicious span -
+  server8 pid 17548 carrying `mult=1/3/5` across Nov 4-7 - is mult 3 on Nov 7; the old values
+  were its Nov 4-5 ladder-era tail).
+* No NetTune errors or warnings in the whole history - only periodic statuses, config loads,
+  reloads and per-field `changed ->` lines.
+* Nov 6 (full day): fps with players avg 15.7-17.7 per map, max 20.1; host egress peak-minute
+  sum **15.4 Mbit/s (7.7%)** at 22:09, avg 1.8.
+* Nov 7 (partial, to 20:24): the best day yet - fps with players avg 19.7-20.0 per map
+  (single dips to 5.7); noticeably busier traffic (avg peak-sum 2.8, peak **14.3 Mbit/s** at
+  16:03, one map `server4` averaging 6.05 Mbit/s with 11 peak connections). Config held.
+* Whole-history anomalies stay confined to the debug-instrumented day (Nov 5) and the ladder
+  test days (Nov 3-4): 17 unique lag-spike windows (>=2 s) and 185 out-loss windows (>=5 pkt),
+  all on the same repeat-client IPs (plus 136.169.205.208 and 188.243.61.115 from the Nov 4
+  test day). Nothing new on Nov 6-7 is measurable, and nothing points at the server.
 
 ## Current state & next steps (2026-11-04)
 
